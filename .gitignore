@@ -1,0 +1,53 @@
+# --- CDD Vault credentials — never commit ---
+.cdd_token
+*.cdd_token
+.env
+.env.*
+
+# --- Project data — chemistry stays local (see CLAUDE.md) ---
+data/
+output/
+tests/files/
+autoresearch/logs/
+library.csv
+library_*.csv
+
+# --- Virtual environments ---
+cdd/
+.venv/
+venv/
+env/
+ENV/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Build / packaging ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Test / lint caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
