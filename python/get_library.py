@@ -371,6 +371,82 @@ def list_fields(session, vault, resolved, page_size=1000):
         _dump("Batch UDFs (batch_fields)", bf, n_batches)
 
 
+# ---------- row collection (shared by export_csv and get_df) ----------
+
+def collect_rows(session, vault, resolved, columns, limit=None,
+                 page_size=1000, verbose=True):
+    """Walk the resolved collections and produce all rows in memory.
+
+    Returns (rows, resolver, stats) where:
+      - rows: list[list[str]] — each inner list is one row in `columns` order
+      - resolver: the ColumnResolver instance (call .warn_unmatched() to log typos)
+      - stats: dict with multi_batch_mols, zero_batch_mols, rows_per_collection
+
+    Used by both export_csv (writes to disk) and get_df (builds a DataFrame).
+    """
+    resolver = ColumnResolver(columns)
+    multi_batch_mols = 0
+    zero_batch_mols = 0
+    rows_per_coll = {}
+    all_rows = []
+
+    for name, cid in resolved:
+        if verbose:
+            print(f"\n--- collection name={name} id={cid} ---")
+        coll_rows = 0
+        for mol in paginate_molecules(session, vault, cid,
+                                      page_size=page_size, limit=None):
+            batches = mol.get("batches") or []
+            if not batches:
+                zero_batch_mols += 1
+                iter_batches = [None]
+            else:
+                if len(batches) > 1:
+                    multi_batch_mols += 1
+                iter_batches = batches
+            for batch in iter_batches:
+                all_rows.append(resolver.resolve_row(mol, batch, name))
+                coll_rows += 1
+                if verbose and coll_rows % 500 == 0:
+                    print(f"  rows={coll_rows}")
+                if limit is not None and coll_rows >= limit:
+                    break
+            if limit is not None and coll_rows >= limit:
+                break
+        rows_per_coll[name] = coll_rows
+        if verbose:
+            print(f"  collection_rows={coll_rows}")
+
+    return all_rows, resolver, {
+        "multi_batch_mols": multi_batch_mols,
+        "zero_batch_mols": zero_batch_mols,
+        "rows_per_collection": rows_per_coll,
+    }
+
+
+def _print_run_stats(rows, stats, limit, resolver, output=None):
+    """Emit the post-run summary used by both export_csv and get_df."""
+    print(f"\ntotal_rows={len(rows)}")
+    if stats["multi_batch_mols"]:
+        print(
+            f"multi_batch_molecules={stats['multi_batch_mols']} "
+            f"(each emitted >1 row — one per batch)"
+        )
+    if stats["zero_batch_mols"]:
+        print(
+            f"zero_batch_molecules={stats['zero_batch_mols']} "
+            f"(emitted 1 row with empty batch-level cells)"
+        )
+    if output is not None:
+        print(f"output_file={output}")
+    if limit is None:
+        resolver.warn_unmatched()
+    else:
+        print("note: limit set → unmatched-column WARN skipped "
+              "(false positives likely). Re-run without limit to validate "
+              "columns, or use --list-fields.")
+
+
 # ---------- export ----------
 
 def export_csv(session, vault, resolved, output, columns, limit,
@@ -383,61 +459,110 @@ def export_csv(session, vault, resolved, output, columns, limit,
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    resolver = ColumnResolver(columns)
-    rows_written = 0
-    multi_batch_mols = 0
-    zero_batch_mols = 0
+    rows, resolver, stats = collect_rows(
+        session, vault, resolved, columns,
+        limit=limit, page_size=page_size, verbose=True,
+    )
 
     with open(output, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(columns)
+        w.writerows(rows)
 
-        for name, cid in resolved:
-            print(f"\n--- collection name={name} id={cid} ---")
-            coll_rows = 0
-            for mol in paginate_molecules(session, vault, cid,
-                                          page_size=page_size, limit=None):
-                batches = mol.get("batches") or []
-                if not batches:
-                    zero_batch_mols += 1
-                    iter_batches = [None]
-                else:
-                    if len(batches) > 1:
-                        multi_batch_mols += 1
-                    iter_batches = batches
-                for batch in iter_batches:
-                    w.writerow(resolver.resolve_row(mol, batch, name))
-                    coll_rows += 1
-                    rows_written += 1
-                    if coll_rows % 500 == 0:
-                        print(f"  rows={coll_rows}")
-                    if limit is not None and coll_rows >= limit:
-                        break
-                if limit is not None and coll_rows >= limit:
-                    break
-            print(f"  collection_rows={coll_rows}")
+    _print_run_stats(rows, stats, limit, resolver, output=output)
 
-    print(f"\ntotal_rows_written={rows_written}")
-    if multi_batch_mols:
-        print(
-            f"multi_batch_molecules={multi_batch_mols} "
-            f"(each emitted >1 row — one per batch)"
+
+# ---------- notebook / programmatic API ----------
+
+def _normalize_arg(arg):
+    """Accept a list, a comma-separated string, or None."""
+    if arg is None:
+        return None
+    if isinstance(arg, str):
+        return [x.strip() for x in arg.split(",") if x.strip()]
+    return [str(x).strip() for x in arg if str(x).strip()]
+
+
+def get_df(
+    vault,
+    collections=None,
+    collection_ids=None,
+    columns=None,
+    token=None,
+    token_file="~/.cdd_token",
+    limit=None,
+    page_size=1000,
+    verbose=True,
+):
+    """Fetch CDD Vault collections and return as a pandas DataFrame.
+
+    Mirrors the CLI behavior: one row per (molecule, batch), layered column
+    resolution across `top-level / molecule_fields / batch_fields`. See
+    docs/documentation.md for the full reference.
+
+    Args:
+        vault (int): CDD Vault numeric ID.
+        collections: collection names — list[str] or 'AJ,AK'. Mutually
+            exclusive with collection_ids.
+        collection_ids: numeric collection IDs — list[int|str] or '931034,931035'.
+            Mutually exclusive with collections.
+        columns: requested columns — list[str] or comma-separated string.
+            Defaults to ['collection', 'name', 'smiles'].
+        token: API token string. If None, falls back to token_file.
+        token_file: path to a one-line token file (default '~/.cdd_token').
+        limit: cap rows per collection (smoke testing).
+        page_size: CDD API page size.
+        verbose: print progress to stdout.
+
+    Returns:
+        pandas.DataFrame with the requested columns.
+    """
+    import pandas as pd  # lazy so the CLI doesn't require pandas
+
+    names = _normalize_arg(collections)
+    ids = _normalize_arg(collection_ids)
+    if not names and not ids:
+        raise ValueError(
+            "must supply collections=['AJ',...] or collection_ids=[931034,...]"
         )
-    if zero_batch_mols:
-        print(
-            f"zero_batch_molecules={zero_batch_mols} "
-            f"(emitted 1 row with empty batch-level cells)"
+    if names and ids:
+        raise ValueError(
+            "supply only one of collections / collection_ids, not both"
         )
-    print(f"output_file={output}")
-    if limit is None:
-        resolver.warn_unmatched()
+
+    if token is None:
+        token = load_token(token_file)
+    session = make_session(token)
+
+    if names:
+        resolved = resolve_collections(session, vault, names=names)
     else:
-        # Under --limit, scanning a strict subset can falsely flag real
-        # sparse fields (e.g. ones present on only 20% of molecules) as
-        # unmatched. Skip the WARN; the user can verify with --list-fields.
-        print("note: --limit set → unmatched-column WARN skipped "
-              "(false positives likely). Re-run without --limit to validate "
-              "columns, or use --list-fields.")
+        resolved = resolve_collections(session, vault, ids=ids)
+    if verbose:
+        print(f"resolved_collections={[(n, int(c)) for n, c in resolved]}")
+
+    if columns is None:
+        cols = ["collection", "name", "smiles"]
+    elif isinstance(columns, str):
+        cols = [c.strip() for c in columns.split(",") if c.strip()]
+    else:
+        cols = list(columns)
+    if not cols:
+        raise ValueError("columns parsed to empty list")
+    if verbose:
+        print(f"requested_columns={cols}")
+
+    rows, resolver, stats = collect_rows(
+        session, vault, resolved, cols,
+        limit=limit, page_size=page_size, verbose=verbose,
+    )
+
+    df = pd.DataFrame(rows, columns=cols)
+
+    if verbose:
+        _print_run_stats(rows, stats, limit, resolver, output=None)
+
+    return df
 
 
 # ---------- main ----------

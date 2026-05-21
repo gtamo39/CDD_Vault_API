@@ -30,7 +30,9 @@ Get the token from CDD Vault → your name (top-right) → **My Account** →
 
 ## Quick start
 
-CLI:
+Three equivalent entry points — pick whichever fits your workflow.
+
+**CLI** — writes a CSV:
 
 ```bash
 python3 python/get_library.py \
@@ -39,12 +41,25 @@ python3 python/get_library.py \
   --output ./library.csv
 ```
 
-Or open [vignettes/Sample_library_download.ipynb](vignettes/Sample_library_download.ipynb)
+**Python** — returns a `pandas.DataFrame`:
+
+```python
+import sys; sys.path.insert(0, 'python')
+from get_library import get_df
+
+df = get_df(
+    vault=7108,
+    collections=['AJ', 'AK'],
+    columns=['collection', 'name', 'smiles', 'Subseries', 'Lib ID'],
+)
+```
+
+**Notebook** — open [vignettes/Sample_library_download.ipynb](vignettes/Sample_library_download.ipynb)
 and pick the **Python (CDD)** kernel.
 
-See **[docs/documentation.md](docs/documentation.md)** for the full CLI
-reference (every flag, the column-resolution chain, the UDF field catalog,
-and end-to-end examples).
+See **[docs/documentation.md](docs/documentation.md)** for the full reference
+— every CLI flag, the `get_df` signature, the column-resolution chain, the
+UDF field catalog, and end-to-end examples.
 
 ## Repository layout
 

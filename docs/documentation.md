@@ -26,6 +26,18 @@ python3 python/get_library.py --vault 7108 --collections AJ,AK
 The default output has three columns (`collection,name,smiles`) and one row
 per (molecule, batch).
 
+Or use the Python API to get a DataFrame directly:
+
+```python
+import sys; sys.path.insert(0, 'python')
+from get_library import get_df
+
+df = get_df(vault=7108, collections=['AJ', 'AK'])
+```
+
+See [Programmatic API (`get_df`)](#programmatic-api-get_df) below for the
+full signature.
+
 ---
 
 ## CLI arguments
@@ -106,6 +118,72 @@ Use this to discover what column names exist before picking `--columns`.
 ```bash
 python3 python/get_library.py --vault 7108 --collections AJ,AK --list-fields
 ```
+
+---
+
+## Programmatic API (`get_df`)
+
+For notebook or scripting use, `get_df()` returns a `pandas.DataFrame` from the
+same primitives the CLI uses — one row per (molecule, batch), same five-step
+column resolution. `pandas` is lazily imported, so the CLI path stays
+dependency-light.
+
+```python
+from get_library import get_df
+
+df = get_df(
+    vault: int,
+    collections=None,           # list[str] or 'AJ,AK' or None
+    collection_ids=None,        # list[int|str] or '931034,931035' or None
+    columns=None,               # list[str] or 'a,b,c'; default ['collection','name','smiles']
+    token=None,                 # raw token string; falls back to token_file
+    token_file='~/.cdd_token',  # one-line token file
+    limit=None,                 # cap rows per collection (smoke test)
+    page_size=1000,             # CDD API page size
+    verbose=True,               # print progress to stdout
+)
+```
+
+Each argument maps one-to-one to a CLI flag — see the [CLI arguments](#cli-arguments)
+table for the same defaults and semantics. The only differences:
+
+- `collections` accepts either a list (`['AJ', 'AK']`) or comma string (`'AJ,AK'`)
+- `collection_ids` likewise
+- `columns` likewise; default is `['collection', 'name', 'smiles']`
+- `verbose=False` suppresses the per-collection progress prints
+
+### Notebook example
+
+The companion notebook is [vignettes/Sample_library_download.ipynb](../vignettes/Sample_library_download.ipynb).
+The setup cell uses `%autoreload 2` so edits to `python/get_library.py`
+propagate without restarting the kernel.
+
+```python
+%load_ext autoreload
+%autoreload 2
+
+import os, sys
+sys.path.insert(0, os.path.abspath('../python'))
+
+import pandas as pd
+from get_library import get_df
+
+df = get_df(
+    vault=7108,
+    collections=['AJ', 'AK'],
+    columns=[
+        'collection', 'name', 'molecule_batch_identifier',
+        'smiles', 'molecular_weight', 'log_p',
+        'Subseries', 'Px_anywhere',
+        'Lib ID', 'Plate ID', 'Px_screened_anywhere',
+    ],
+)
+```
+
+> **Privacy reminder:** `df.head()` in a notebook will render SMILES and
+> compound names into cell output. Clear all outputs before committing the
+> notebook (`jupyter nbconvert --clear-output --inplace <notebook.ipynb>`).
+> The Python API is otherwise local-only by the same rules as the CLI.
 
 ---
 
