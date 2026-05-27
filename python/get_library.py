@@ -40,6 +40,7 @@ from collections import Counter
 from pathlib import Path
 
 import requests
+from tqdm import tqdm
 
 API_BASE = "https://app.collaborativedrug.com/api/v1"
 
@@ -394,6 +395,9 @@ def collect_rows(session, vault, resolved, columns, limit=None,
         if verbose:
             print(f"\n--- collection name={name} id={cid} ---")
         coll_rows = 0
+        # Row count isn't known up front (paginated), so the bar shows a live
+        # count + rate rather than a percentage. Disabled when not verbose.
+        bar = tqdm(desc=f"  {name}", unit="row", disable=not verbose, leave=True)
         for mol in paginate_molecules(session, vault, cid,
                                       page_size=page_size, limit=None):
             batches = mol.get("batches") or []
@@ -407,12 +411,12 @@ def collect_rows(session, vault, resolved, columns, limit=None,
             for batch in iter_batches:
                 all_rows.append(resolver.resolve_row(mol, batch, name))
                 coll_rows += 1
-                if verbose and coll_rows % 500 == 0:
-                    print(f"  rows={coll_rows}")
+                bar.update(1)
                 if limit is not None and coll_rows >= limit:
                     break
             if limit is not None and coll_rows >= limit:
                 break
+        bar.close()
         rows_per_coll[name] = coll_rows
         if verbose:
             print(f"  collection_rows={coll_rows}")
