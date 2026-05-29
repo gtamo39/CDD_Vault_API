@@ -372,7 +372,50 @@ def list_fields(session, vault, resolved, page_size=1000):
         _dump("Batch UDFs (batch_fields)", bf, n_batches)
 
 
-# ---------- row collection (shared by export_csv and get_df) ----------
+# ---------- row iteration (shared by CSV / SDF / DataFrame paths) ----------
+
+def _iter_mol_batch(session, vault, resolved, page_size, limit, verbose, stats):
+    """Generator yielding (collection_name, mol_obj, batch_obj) for each row.
+
+    Mutates `stats` in place — caller passes an empty dict and reads it after
+    the generator is exhausted. Shows a tqdm progress bar per collection when
+    verbose=True.
+    """
+    stats.setdefault("multi_batch_mols", 0)
+    stats.setdefault("zero_batch_mols", 0)
+    stats.setdefault("rows_per_collection", {})
+    for name, cid in resolved:
+        if verbose:
+            print(f"\n--- collection name={name} id={cid} ---")
+        coll_rows = 0
+        # Row count isn't known up front (paginated), so the bar shows a live
+        # count + rate rather than a percentage. Disabled when not verbose.
+        bar = tqdm(desc=f"  {name}", unit="row", disable=not verbose, leave=True)
+        try:
+            for mol in paginate_molecules(session, vault, cid,
+                                          page_size=page_size, limit=None):
+                batches = mol.get("batches") or []
+                if not batches:
+                    stats["zero_batch_mols"] += 1
+                    iter_batches = [None]
+                else:
+                    if len(batches) > 1:
+                        stats["multi_batch_mols"] += 1
+                    iter_batches = batches
+                for batch in iter_batches:
+                    yield name, mol, batch
+                    coll_rows += 1
+                    bar.update(1)
+                    if limit is not None and coll_rows >= limit:
+                        break
+                if limit is not None and coll_rows >= limit:
+                    break
+        finally:
+            bar.close()
+        stats["rows_per_collection"][name] = coll_rows
+        if verbose:
+            print(f"  collection_rows={coll_rows}")
+
 
 def collect_rows(session, vault, resolved, columns, limit=None,
                  page_size=1000, verbose=True):
@@ -386,46 +429,13 @@ def collect_rows(session, vault, resolved, columns, limit=None,
     Used by both export_csv (writes to disk) and get_df (builds a DataFrame).
     """
     resolver = ColumnResolver(columns)
-    multi_batch_mols = 0
-    zero_batch_mols = 0
-    rows_per_coll = {}
+    stats = {}
     all_rows = []
-
-    for name, cid in resolved:
-        if verbose:
-            print(f"\n--- collection name={name} id={cid} ---")
-        coll_rows = 0
-        # Row count isn't known up front (paginated), so the bar shows a live
-        # count + rate rather than a percentage. Disabled when not verbose.
-        bar = tqdm(desc=f"  {name}", unit="row", disable=not verbose, leave=True)
-        for mol in paginate_molecules(session, vault, cid,
-                                      page_size=page_size, limit=None):
-            batches = mol.get("batches") or []
-            if not batches:
-                zero_batch_mols += 1
-                iter_batches = [None]
-            else:
-                if len(batches) > 1:
-                    multi_batch_mols += 1
-                iter_batches = batches
-            for batch in iter_batches:
-                all_rows.append(resolver.resolve_row(mol, batch, name))
-                coll_rows += 1
-                bar.update(1)
-                if limit is not None and coll_rows >= limit:
-                    break
-            if limit is not None and coll_rows >= limit:
-                break
-        bar.close()
-        rows_per_coll[name] = coll_rows
-        if verbose:
-            print(f"  collection_rows={coll_rows}")
-
-    return all_rows, resolver, {
-        "multi_batch_mols": multi_batch_mols,
-        "zero_batch_mols": zero_batch_mols,
-        "rows_per_collection": rows_per_coll,
-    }
+    for name, mol, batch in _iter_mol_batch(
+        session, vault, resolved, page_size, limit, verbose, stats
+    ):
+        all_rows.append(resolver.resolve_row(mol, batch, name))
+    return all_rows, resolver, stats
 
 
 def _print_run_stats(rows, stats, limit, resolver, output=None):
@@ -474,6 +484,73 @@ def export_csv(session, vault, resolved, output, columns, limit,
         w.writerows(rows)
 
     _print_run_stats(rows, stats, limit, resolver, output=output)
+
+
+def export_sdf(session, vault, resolved, output, columns, limit,
+               page_size=1000):
+    """Write SDF: structure from mol['molfile'], --columns become property tags.
+
+    One SDF record per (molecule, batch). Molecules with no molfile are
+    skipped and reported. CDD's listing already includes a complete molfile
+    on every molecule — no extra fetch and no RDKit dependency.
+    """
+    print("=== export (SDF) ===")
+    print(
+        f"vault={vault} output={output} columns={columns} "
+        f"limit={limit} page_size={page_size}"
+    )
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    resolver = ColumnResolver(columns)
+    stats = {}
+    n_written = 0
+    n_no_molfile = 0
+
+    with open(output, "w", encoding="utf-8") as fh:
+        for name, mol, batch in _iter_mol_batch(
+            session, vault, resolved, page_size, limit, True, stats
+        ):
+            molfile = mol.get("molfile")
+            if not molfile:
+                n_no_molfile += 1
+                continue
+            fh.write(molfile)
+            if not molfile.endswith("\n"):
+                fh.write("\n")
+            # Requested columns become SDF property tags. The resolver also
+            # tracks unmatched columns so warn_unmatched() catches typos.
+            row_values = resolver.resolve_row(mol, batch, name)
+            for col, val in zip(columns, row_values):
+                if val in (None, ""):
+                    continue
+                fh.write(f">  <{col}>\n")
+                for line in str(val).split("\n"):
+                    fh.write(f"{line}\n")
+                fh.write("\n")
+            fh.write("$$$$\n")
+            n_written += 1
+
+    print(f"\ntotal_records_written={n_written}")
+    if n_no_molfile:
+        print(
+            f"records_skipped_no_molfile={n_no_molfile} "
+            f"(molecule listing had empty molfile)"
+        )
+    if stats.get("multi_batch_mols"):
+        print(
+            f"multi_batch_molecules={stats['multi_batch_mols']} "
+            f"(each emitted >1 record — one per batch)"
+        )
+    if stats.get("zero_batch_mols"):
+        print(f"zero_batch_molecules={stats['zero_batch_mols']}")
+    print(f"output_file={output}")
+    if limit is None:
+        resolver.warn_unmatched()
+    else:
+        print("note: limit set → unmatched-column WARN skipped "
+              "(false positives likely). Re-run without limit to validate "
+              "columns, or use --list-fields.")
 
 
 # ---------- notebook / programmatic API ----------
@@ -584,6 +661,9 @@ def main():
     ap.add_argument("--token-file", default="~/.cdd_token")
     ap.add_argument("--output", default="./library.csv")
     ap.add_argument("--columns", default="collection,name,smiles")
+    ap.add_argument("--format", choices=["csv", "sdf"], default=None,
+                    help="Output format. If omitted, inferred from --output "
+                         "extension (.sdf → sdf, anything else → csv).")
     ap.add_argument("--limit", type=int, default=None,
                     help="Cap rows per collection (smoke test).")
     ap.add_argument("--page-size", type=int, default=1000)
@@ -624,10 +704,22 @@ def main():
     if not columns:
         sys.exit("ERR: --columns parsed to empty list")
     print(f"requested_columns={columns}")
-    export_csv(
-        session, args.vault, resolved, args.output, columns,
-        args.limit, page_size=args.page_size,
-    )
+
+    fmt = args.format
+    if fmt is None:
+        ext = Path(args.output).suffix.lower()
+        fmt = "sdf" if ext == ".sdf" else "csv"
+
+    if fmt == "sdf":
+        export_sdf(
+            session, args.vault, resolved, args.output, columns,
+            args.limit, page_size=args.page_size,
+        )
+    else:
+        export_csv(
+            session, args.vault, resolved, args.output, columns,
+            args.limit, page_size=args.page_size,
+        )
 
 
 if __name__ == "__main__":

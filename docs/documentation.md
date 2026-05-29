@@ -48,8 +48,9 @@ full signature.
 | `--collections "A,B"`| str         | _required (or `--collection-ids`)_ | Comma-separated collection **names** to export. Mutually exclusive with `--collection-ids`.           |
 | `--collection-ids "I,J"` | str     | _required (or `--collections`)_ | Comma-separated numeric **collection IDs**. Useful when names are ambiguous.                              |
 | `--token-file PATH`  | path        | `~/.cdd_token`                | File containing the API token on one line.                                                                  |
-| `--output PATH`      | path        | `./library.csv`               | Where to write the CSV. Parent directory created if missing. UTF-8.                                          |
-| `--columns "a,b,c"`  | str         | `collection,name,smiles`      | Comma-separated column list. Names are resolved across five namespaces (see [Column resolution](#column-resolution)). Names may contain spaces if shell-quoted (e.g. `"Lib ID"`). |
+| `--output PATH`      | path        | `./library.csv`               | Where to write the file. Parent directory created if missing. UTF-8. Extension drives the default format (`.sdf` → SDF, anything else → CSV) unless `--format` overrides. |
+| `--columns "a,b,c"`  | str         | `collection,name,smiles`      | Comma-separated column list. Names are resolved across five namespaces (see [Column resolution](#column-resolution)). Names may contain spaces if shell-quoted (e.g. `"Lib ID"`). In SDF mode, each column becomes a property tag. |
+| `--format csv\|sdf`  | str         | inferred from `--output`      | Output format. Set explicitly to override the extension-based default. CSV writes one row per (molecule, batch); SDF writes one record per (molecule, batch), structure from `molfile`, columns as property tags. |
 | `--limit N`          | int         | _no limit_                    | Cap rows **per collection**. Useful for smoke tests. Counts rows (one per batch), not molecules.            |
 | `--page-size N`      | int         | `1000`                        | CDD API page size for the molecule listing. Rarely needs tuning.                                            |
 | `--discover`         | flag        | off                           | Probe one collection: dump field counts, smiles-present check, and meta-endpoint comparison. Writes no CSV. |
@@ -66,11 +67,35 @@ full signature.
 
 ## Modes
 
-### Export mode (default)
+### Export mode (CSV or SDF)
 
-Writes one row per `(molecule, batch)` pair. Molecules with multiple batches
-produce multiple rows (molecule-level columns repeat); molecules with no
-batches produce one row with batch-level cells empty.
+Writes one row/record per `(molecule, batch)` pair. Molecules with multiple
+batches produce multiple rows (molecule-level columns repeat); molecules
+with no batches produce one row with batch-level cells empty.
+
+**Format selection.** By default the script picks CSV or SDF from the
+`--output` file extension (`.sdf` → SDF, anything else → CSV). Pass
+`--format csv|sdf` to override.
+
+**CSV vs SDF — when to use which:**
+
+|                            | CSV                                                                | SDF                                                                                 |
+| -------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| **Primary use**            | Spreadsheets, pandas, ML pipelines, joining with non-chem data     | Chemistry software (RDKit, ChemDraw, KNIME, OpenBabel) that needs 2D/3D structures  |
+| **How structure appears**  | Only if you request `smiles` / `molfile` / `inchi` in `--columns` (as text cells)  | Always present — the `molfile` block is the structure, independent of `--columns`   |
+| **Columns / properties**   | Header row + tabular rows; one cell per column, empty values kept as empty cells | Per record: `>  <Name>` then value, blank line as separator; empty values omitted   |
+| **Record terminator**      | Newline                                                            | `$$$$`                                                                              |
+| **Multi-line values**      | Awkward (need quoting); we don't currently quote-escape internal newlines | Native — each line in a value just adds a line under the property tag               |
+| **Typical size**           | ~1 MB for AJ+AK (~8K rows, 3 columns)                              | ~10–30 MB for the same data (every record carries a full molfile block, ~1–3 KB)    |
+| **Skipped molecules**      | None — every (molecule, batch) row is written                      | Records with an empty `molfile` are skipped and reported as `records_skipped_no_molfile` |
+| **Required deps**          | `requests` (stdlib `csv`)                                          | `requests` only — molfile comes verbatim from CDD's listing, no RDKit needed        |
+
+**Rule of thumb:** if you'll open it in Excel/pandas/Jupyter, use CSV. If
+you'll open it in a chemistry tool that wants to render structures, use SDF.
+Generate both if you need both — they're independent runs and the column
+list can differ.
+
+**CSV output:**
 
 ```bash
 python3 python/get_library.py \
@@ -80,10 +105,24 @@ python3 python/get_library.py \
   --output ./library.csv
 ```
 
+**SDF output:** the requested columns become SDF property tags (`>  <Column>`),
+and the structure block is each molecule's `molfile` field — which CDD's
+listing returns directly, so there's no extra fetch and no RDKit dependency.
+Molecules with an empty `molfile` are skipped and reported.
+
+```bash
+python3 python/get_library.py \
+  --vault 7108 \
+  --collections AJ,AK \
+  --columns "collection,name,Subseries,Lib ID,Px_anywhere" \
+  --output ./library.sdf
+```
+
 At the end of an export run the script prints:
 
-- `total_rows_written=N` — total rows in the CSV body
-- `multi_batch_molecules=N` — molecules that emitted >1 row
+- `total_rows_written=N` (CSV) or `total_records_written=N` (SDF)
+- `records_skipped_no_molfile=N` (SDF only, if any)
+- `multi_batch_molecules=N` — molecules that emitted >1 row/record
 - `zero_batch_molecules=N` — molecules with no batches (rare)
 - `WARN: column 'X' never matched any namespace …` — typo guard (full exports only)
 
@@ -151,6 +190,9 @@ table for the same defaults and semantics. The only differences:
 - `collection_ids` likewise
 - `columns` likewise; default is `['collection', 'name', 'smiles']`
 - `verbose=False` suppresses the per-collection progress prints
+- **SDF output is CLI-only.** `get_df()` always returns a DataFrame. If you
+  need SDF from Python, call `export_sdf()` directly (same arguments as
+  `export_csv`) or shell out to the CLI with `--output ./library.sdf`.
 
 ### Notebook example
 
@@ -521,6 +563,21 @@ python3 python/get_library.py \
   --columns "collection,name,molecule_batch_identifier,smiles,inchi_key,molecular_weight,Subseries,Lib ID,Plate ID,Tube ID,Px_anywhere,Px_screened_anywhere,Px_screened_date" \
   --output ./library_wide.csv
 ```
+
+**SDF export** for downstream RDKit / OpenBabel / ChemDraw workflows. Each
+record's structure block is the molecule's CDD `molfile`; the requested
+columns become SDF property tags. No RDKit needed on this side — the script
+just emits text around the molfile.
+
+```bash
+python3 python/get_library.py \
+  --vault 7108 --collections AJ,AK \
+  --columns "collection,name,molecule_batch_identifier,Subseries,Lib ID,Px_anywhere,Px_screened_anywhere" \
+  --output ./library.sdf
+```
+
+(Format is auto-detected from the `.sdf` extension. To force a specific
+format regardless of extension, add `--format sdf` or `--format csv`.)
 
 ---
 
