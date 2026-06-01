@@ -65,9 +65,31 @@ UDF field catalog, and end-to-end examples.
 
 | Path | Purpose |
 |---|---|
-| [python/get_library.py](python/get_library.py) | Export CDD collections to CSV |
+| [python/get_library.py](python/get_library.py) | Export CDD collections to CSV / SDF / `pandas.DataFrame` |
 | [python/download_cdd_structures.py](python/download_cdd_structures.py) | Fetch compound structure PNGs for a saved search |
-| [vignettes/](vignettes/) | Jupyter walkthroughs |
+| [python/convert_dataset.py](python/convert_dataset.py) | `convert_to_target_format` — long→wide pivot for MDR1-style data |
+| [vignettes/](vignettes/) | Jupyter walkthroughs — `Sample_library_download.ipynb`, `convert_dataset.ipynb` |
+| [tests/](tests/) | `unittest` suite (run with `python -m unittest discover tests`) |
 | [docs/documentation.md](docs/documentation.md) | Full CLI + field reference |
 | [CLAUDE.md](CLAUDE.md) | Collaboration rules + local-only data policy |
 | `data/`, `output/` | Local-only (gitignored) — never commit |
+
+## Tests
+
+Hermetic `unittest` suite — synthetic `TEST-XXXX` compound IDs only, no real
+chemistry, no network calls. Run from the repo root with the project venv
+activated:
+
+```bash
+# All tests
+python -m unittest discover tests -v
+
+# Just one file
+python -m unittest tests.test_convert_dataset -v
+```
+
+Current coverage:
+
+| Module under test | Test file |
+|---|---|
+| [python/convert_dataset.py](python/convert_dataset.py) | [tests/test_convert_dataset.py](tests/test_convert_dataset.py) — 13 tests covering the long→wide pivot, unit-suffix handling, base/inhibitor splits, outer-merge behavior, type coercion, and input-validation guards |
