@@ -328,6 +328,72 @@ class NormalizeOriColumnsTests(unittest.TestCase):
         self.assertEqual(list(ori.columns), before)
 
 
+# ---------- numeric coercion preserves lab notations ----------
+
+class NumericCoercionTests(unittest.TestCase):
+    """Number columns: parseable → float, unparseable strings preserved, empties → NaN."""
+
+    def _convert_with_papp_value(self, papp_ab_str):
+        """Run the pivot on a 1-compound ori where Mean Papp A to B = the given string.
+
+        Suppresses stdout to silence the all-False mask warning — these tests
+        only care about the base-column coercion, not the inhibitor side.
+        """
+        ori = pd.DataFrame([
+            {
+                'Molecule Name': 'TEST-0001',
+                'Batch Molecule-Batch ID': 'TEST-0001-001',
+                'MDR1-MDCK II: Run Conditions': 'no_inhibitor',
+                'MDR1-MDCK II: Study number': 'S1',
+                'MDR1-MDCK II: Mean Papp A to B (10-6 cm/s)': papp_ab_str,
+                'MDR1-MDCK II: Efflux ratio': '1.5',
+                'MDR1-MDCK II: Permeability Class': 'low',
+            }
+        ])
+        mask = ori['MDR1-MDCK II: Run Conditions'] == 'with_inhibitor'  # all False
+        with contextlib.redirect_stdout(io.StringIO()):
+            return convert_to_target_format(
+                ori, _make_fake_col_ori(), _make_fake_col_target(), mask,
+            )
+
+    def test_below_detection_limit_string_is_preserved(self):
+        """
+        Input    : Mean Papp A to B = '<0.38' (a below-detection-limit notation).
+        Expected : output cell holds the literal string '<0.38', not NaN.
+        Rationale: regression for the bug where pd.to_numeric(errors='coerce')
+                   silently lost qualified lab values.
+        """
+        target = self._convert_with_papp_value('<0.38')
+        v = target.loc[0, 'Mean Papp A to B']
+        # value must be the original string, not NaN / not parsed
+        self.assertEqual(v, '<0.38')
+        # and the column dtype falls back to object to accommodate the string
+        self.assertEqual(target['Mean Papp A to B'].dtype, object)
+
+    def test_all_parseable_column_stays_numeric_dtype(self):
+        """
+        Input    : Mean Papp A to B = '10.5' (parseable as float).
+        Expected : output column dtype is numeric and the value is 10.5.
+        Rationale: don't regress the all-parseable case — preserves downstream math.
+        """
+        target = self._convert_with_papp_value('10.5')
+        # parseable value becomes a float
+        self.assertEqual(target.loc[0, 'Mean Papp A to B'], 10.5)
+        # dtype stays numeric (no fallback to object needed)
+        self.assertTrue(pd.api.types.is_numeric_dtype(target['Mean Papp A to B']))
+
+    def test_empty_string_becomes_nan(self):
+        """
+        Input    : Mean Papp A to B = '' (empty cell, not a qualified value).
+        Expected : output cell is NaN.
+        Rationale: empties are missing data, not lab notations — they shouldn't
+                   be preserved as the literal empty string.
+        """
+        target = self._convert_with_papp_value('')
+        # truly empty cell → NaN, not ''
+        self.assertTrue(pd.isna(target.loc[0, 'Mean Papp A to B']))
+
+
 # ---------- mask distribution warnings ----------
 
 class MaskDistributionWarningTests(unittest.TestCase):
