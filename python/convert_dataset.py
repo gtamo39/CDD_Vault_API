@@ -207,8 +207,15 @@ def convert_to_target_format(
         if dt == 'Number' and name in out.columns:
             out[name] = _coerce_numeric_keep_unparseable(out[name])
 
-    # 8. Final column order: id_cols first, then target schema order.
-    target_order = [n for n in col_target['Name'] if n in out.columns]
+    # 8. Final column order: id_cols first, then the FULL col_target schema.
+    #    Any col_target name not present in `out` (because the source ori had
+    #    no such column) is added as an all-NaN column. This keeps the output
+    #    schema stable across different source files — two runs with the same
+    #    col_target always produce CSVs with the same headers.
+    for name in col_target['Name']:
+        if name not in out.columns:
+            out[name] = pd.NA
+    target_order = list(col_target['Name'])
     return out[id_cols + target_order].reset_index(drop=True)
 
 
@@ -434,9 +441,16 @@ def test_pivot_round_trip(
     def _stringify(df):
         out = df.copy()
         for c in out.columns:
+            col = out[c]
+            # For numeric-dtype columns, round before stringifying — otherwise
+            # float-precision drift through CSV roundtrip (e.g. 0.12345678901234567
+            # vs 0.123456789012345) flags every cell as a diff. 6 decimals is
+            # below lab-measurement precision and above IEEE-754 noise.
+            if pd.api.types.is_numeric_dtype(col):
+                col = col.round(6)
             # pandas 3.x preserves NaN through .astype(str). fillna('') first
             # so every missing-value sentinel collapses to the same '' token.
-            s = out[c].fillna('').astype(str).str.strip()
+            s = col.fillna('').astype(str).str.strip()
             s = s.replace({'nan': '', 'None': '', 'NaT': '', '<NA>': ''})
             # collapse int-like floats: '5.0' / '5.000' → '5'
             s = s.str.replace(r'^(-?\d+)\.0+$', r'\1', regex=True)
@@ -482,3 +496,189 @@ def test_pivot_round_trip(
 
     print('\nFAIL: round-trip is lossy. Inspect the columns above.')
     return False
+
+
+def read_xlsx_preserving_qualifiers(path: str, sheet_name: str) -> pd.DataFrame:
+    """Read an Excel sheet, reconstructing '<x' / '>x' values from cell formats.
+
+    Lab workflows sometimes encode below-detection-limit or above-range values
+    as ordinary numbers with a custom Excel display format like ``\\< 0.000``
+    (the ``<`` is just rendered, not stored). ``pd.read_excel`` reads the
+    underlying float and silently loses the qualifier. This reader walks the
+    sheet with openpyxl, and for each cell whose ``number_format`` starts with
+    ``\\<`` or ``\\>``, returns the qualified string (e.g. ``'< 0.384'``).
+    Other cells pass through unchanged.
+
+    Args:
+        path: xlsx file path.
+        sheet_name: name of the sheet to read.
+
+    Returns:
+        DataFrame with the same shape as ``pd.read_excel`` would produce,
+        but with qualifier-formatted cells re-rendered as their displayed text.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb[sheet_name]
+    rows = list(ws.iter_rows(values_only=False))
+    if not rows:
+        return pd.DataFrame()
+    header = [c.value for c in rows[0]]
+
+    records = []
+    for row in rows[1:]:
+        rec = {}
+        for h, cell in zip(header, row):
+            val = cell.value
+            fmt = cell.number_format or ''
+            if (
+                isinstance(val, (int, float))
+                and not isinstance(val, bool)
+                and isinstance(fmt, str)
+            ):
+                m = re.match(r'^\\([<>])', fmt)
+                if m:
+                    qualifier = m.group(1)
+                    dm = re.search(r'\.(0+)', fmt)
+                    decimals = len(dm.group(1)) if dm else 0
+                    rec[h] = f'{qualifier} {val:.{decimals}f}'
+                    continue
+            rec[h] = val
+        records.append(rec)
+    return pd.DataFrame(records)
+
+
+def validate_pivoted_output(
+    df: pd.DataFrame,
+    *,
+    molecule_id_re: str = r'^SRB-\d{7}$',
+    batch_id_re: str = r'^SRB-\d{7}-\d{3}$',
+    efflux_rtol: float = 0.05,
+) -> bool:
+    """Run a suite of value-format and consistency checks on a pivoted DataFrame.
+
+    Mirrors the spirit of the Batch-Molecule-Batch-ID oversight: catch
+    silently-malformed identifiers, transposed numeric columns, and accidental
+    duplicates. Prints per-check pass/fail plus an offending-row count.
+    Cell values are never printed.
+
+    Checks (return True iff all pass):
+
+      1. ``Molecule Name`` matches ``molecule_id_re`` (default ``SRB-XXXXXXX``).
+      2. ``Batch Molecule-Batch ID`` matches ``batch_id_re`` (default
+         ``SRB-XXXXXXX-NNN``).
+      3. Each row's ``Batch Molecule-Batch ID`` starts with its
+         ``Molecule Name`` followed by ``-``.
+      4. ``Efflux ratio`` ≈ ``Mean Papp B to A`` / ``Mean Papp A to B`` within
+         ``efflux_rtol`` (applied to base + inhibitor variants).
+      7. ``(Molecule Name, Batch Molecule-Batch ID)`` pairs are unique.
+
+    Args:
+        df: wide-format DataFrame (output of ``convert_to_target_format``).
+        molecule_id_re: regex compounds must match.
+        batch_id_re: regex batch ids must match.
+        efflux_rtol: relative tolerance for the efflux-ratio consistency check.
+
+    Returns:
+        True iff every check passed.
+    """
+    print('=== validate_pivoted_output ===')
+    results = []
+
+    def _check(name, ok, n_bad=0):
+        status = 'PASS' if ok else 'FAIL'
+        tail = '' if ok else f'   ({n_bad} offending row(s))'
+        print(f'  {status}  {name}{tail}')
+        results.append(bool(ok))
+
+    # 1. Molecule Name format
+    if 'Molecule Name' in df.columns:
+        s = df['Molecule Name'].astype(str)
+        bad = ~s.str.match(molecule_id_re, na=False)
+        _check(f'Molecule Name matches {molecule_id_re!r}', not bad.any(), int(bad.sum()))
+
+    # 2. Batch ID format
+    if 'Batch Molecule-Batch ID' in df.columns:
+        s = df['Batch Molecule-Batch ID'].astype(str)
+        bad = ~s.str.match(batch_id_re, na=False)
+        _check(f'Batch Molecule-Batch ID matches {batch_id_re!r}', not bad.any(), int(bad.sum()))
+
+    # 3. Batch ID starts with Molecule Name + '-'  (per-row element-wise check;
+    #    pandas 3.x .str.startswith doesn't accept a Series argument).
+    if {'Molecule Name', 'Batch Molecule-Batch ID'}.issubset(df.columns):
+        mn = df['Molecule Name'].astype(str)
+        bid = df['Batch Molecule-Batch ID'].astype(str)
+        ok_row = pd.Series(
+            [b.startswith(m + '-') for m, b in zip(mn, bid)],
+            index=df.index,
+        )
+        _check('Batch Molecule-Batch ID starts with <Molecule Name>-',
+               ok_row.all(), int((~ok_row).sum()))
+
+    # 4. Efflux ratio consistency, base + inhibitor variants
+    for ab, ba, ratio in [
+        ('Mean Papp A to B', 'Mean Papp B to A', 'Efflux ratio'),
+        ('Mean Papp A to B - PgP Inhibitor',
+         'Mean Papp B to A - PgP inhibitor',
+         'Efflux ratio - PgP inhibitor'),
+    ]:
+        if not all(c in df.columns for c in (ab, ba, ratio)):
+            continue
+        # Coerce numerically — any string (e.g. '<0.38') becomes NaN and is
+        # excluded from this comparison (we can't compute the ratio anyway).
+        ab_v = pd.to_numeric(df[ab], errors='coerce')
+        ba_v = pd.to_numeric(df[ba], errors='coerce')
+        r_v = pd.to_numeric(df[ratio], errors='coerce')
+        eligible = ab_v.notna() & ba_v.notna() & r_v.notna() & (ab_v != 0)
+        computed = ba_v / ab_v.where(ab_v != 0)
+        rel = (r_v - computed).abs() / r_v.abs().where(r_v != 0)
+        bad = eligible & (rel > efflux_rtol)
+        _check(f'{ratio!r} ≈ {ba!r} / {ab!r} (rtol={efflux_rtol})',
+               not bad.any(), int(bad.sum()))
+
+    # 7. Unique (Molecule Name, Batch ID)
+    if {'Molecule Name', 'Batch Molecule-Batch ID'}.issubset(df.columns):
+        dup = df.duplicated(subset=['Molecule Name', 'Batch Molecule-Batch ID'])
+        _check('Unique (Molecule Name, Batch Molecule-Batch ID)',
+               not dup.any(), int(dup.sum()))
+
+    all_pass = all(results) if results else False
+    print(f'\n{"PASS" if all_pass else "FAIL"}: {sum(results)} / {len(results)} check(s) passed')
+    return all_pass
+
+
+def check_columns_match(old_cols, new_cols) -> bool:
+    """Strict comparison of two column lists (names AND order).
+
+    Two pivoted CSVs are `pd.concat`-ready only when their headers match
+    exactly. This helper catches drift: a renamed col_target, a missing
+    column, a re-ordering — anything that would break a downstream concat.
+
+    Args:
+        old_cols, new_cols: iterables of column names (typically the
+            ``columns`` of two DataFrames or the headers of two CSVs).
+
+    Returns:
+        True iff `list(old_cols) == list(new_cols)`. On mismatch, prints
+        a diff: columns only in one side, plus a note if the order of
+        shared columns differs.
+    """
+    old_list = list(old_cols)
+    new_list = list(new_cols)
+    match = old_list == new_list
+    print(
+        f'old columns: {len(old_list)}   new columns: {len(new_list)}   '
+        f'identical_and_in_order: {match}'
+    )
+    if not match:
+        only_old = [c for c in old_list if c not in new_list]
+        only_new = [c for c in new_list if c not in old_list]
+        print(f'only in OLD ({len(only_old)}): {only_old}')
+        print(f'only in NEW ({len(only_new)}): {only_new}')
+        shared = set(old_list) & set(new_list)
+        old_shared = [c for c in old_list if c in shared]
+        new_shared = [c for c in new_list if c in shared]
+        if old_shared != new_shared:
+            print('order of shared columns differs between the two CSVs')
+    return match

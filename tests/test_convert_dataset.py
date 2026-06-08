@@ -32,7 +32,13 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'python'))
 
-from convert_dataset import convert_to_target_format, normalize_ori_columns
+from convert_dataset import (
+    check_columns_match,
+    convert_to_target_format,
+    normalize_ori_columns,
+    read_xlsx_preserving_qualifiers,
+    validate_pivoted_output,
+)
 
 
 # ---------- synthetic fixtures (no real chemistry) ----------
@@ -238,6 +244,46 @@ class ConvertToTargetFormatTests(unittest.TestCase):
         self.assertEqual(t1['Permeability Class'], 'low')
         # inhibitor text value (note lowercase 'inhibitor' suffix here)
         self.assertEqual(t1['Permeability Class - PgP inhibitor'], 'high')
+
+
+# ---------- stable output schema (even when source columns are missing) ----------
+
+class StableOutputSchemaTests(unittest.TestCase):
+    """Output columns always equal id_cols + col_target['Name'], regardless of source."""
+
+    def test_missing_source_columns_emit_nan(self):
+        """
+        Input    : col_ori is missing 'Permeability Class' entirely (source ori
+                   doesn't carry that column).
+        Expected : output still has 'Permeability Class' and 'Permeability Class - PgP inhibitor';
+                   both are all-NaN.
+        Rationale: stable schema — two runs with the same col_target always
+                   produce CSVs with the same headers, so downstream code
+                   can rely on column names existing.
+        """
+        col_target = _make_fake_col_target()
+        # col_ori that intentionally omits 'Permeability Class'
+        col_ori_partial = pd.DataFrame({
+            'Name':      ['Study number', 'Mean Papp A to B', 'Efflux ratio'],
+            'Data Type': ['Text',         'Number',           'Number'],
+            'Unit':      [None,           '(10-6 cm/s)',      None],
+            'Required':  [None] * 3,
+            'Condition': [None] * 3,
+        })
+        ori = _make_fake_ori()
+        mask = ori['MDR1-MDCK II: Run Conditions'] == 'with_inhibitor'
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            target = convert_to_target_format(ori, col_ori_partial, col_target, mask)
+
+        # full col_target schema present (independent of what col_ori covered)
+        expected = ['Molecule Name', 'Batch Molecule-Batch ID'] + list(col_target['Name'])
+        self.assertEqual(list(target.columns), expected)
+
+        # the dropped pair is all-NaN
+        self.assertTrue(target['Permeability Class'].isna().all())
+        self.assertTrue(target['Permeability Class - PgP inhibitor'].isna().all())
 
 
 # ---------- input-validation guards ----------
@@ -452,6 +498,241 @@ class MaskDistributionWarningTests(unittest.TestCase):
         # neither degenerate-mask warning fires
         self.assertNotIn('all False', out)
         self.assertNotIn('all True', out)
+
+
+# ---------- column-equivalence guard ----------
+
+class CheckColumnsMatchTests(unittest.TestCase):
+    """check_columns_match — strict name+order equality between two column lists."""
+
+    def _capture(self, fn, *a, **kw):
+        """Run fn under stdout capture and return (result, captured_text)."""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = fn(*a, **kw)
+        return result, buf.getvalue()
+
+    def test_identical_lists_return_true_and_no_diff(self):
+        """
+        Input    : two identical column lists.
+        Expected : returns True; stdout reports identical_and_in_order=True
+                   and prints no diff lines.
+        Rationale: happy-path baseline.
+        """
+        cols = ['a', 'b', 'c']
+        result, out = self._capture(check_columns_match, cols, cols)
+        # match returns True
+        self.assertTrue(result)
+        # success line includes the True marker
+        self.assertIn('identical_and_in_order: True', out)
+        # no diff sections were printed
+        self.assertNotIn('only in OLD', out)
+        self.assertNotIn('only in NEW', out)
+
+    def test_extra_column_in_new_returns_false_and_lists_it(self):
+        """
+        Input    : new_cols has one column the old doesn't.
+        Expected : returns False; diff names the extra column on the NEW side.
+        Rationale: catches the most common drift — a new schema gained a field.
+        """
+        old = ['a', 'b']
+        new = ['a', 'b', 'c']
+        result, out = self._capture(check_columns_match, old, new)
+        # match is False
+        self.assertFalse(result)
+        # diff identifies the new-only column
+        self.assertIn("only in NEW (1): ['c']", out)
+        self.assertIn('only in OLD (0):', out)
+
+    def test_missing_column_in_new_returns_false_and_lists_it(self):
+        """
+        Input    : new_cols dropped one column the old has.
+        Expected : returns False; diff names the missing column on the OLD side.
+        Rationale: catches data loss between runs.
+        """
+        old = ['a', 'b', 'c']
+        new = ['a', 'b']
+        result, out = self._capture(check_columns_match, old, new)
+        # match is False
+        self.assertFalse(result)
+        # diff identifies the old-only column
+        self.assertIn("only in OLD (1): ['c']", out)
+
+    def test_reordered_shared_columns_returns_false_with_order_note(self):
+        """
+        Input    : same column set, different order.
+        Expected : returns False; diff says 'order of shared columns differs'.
+        Rationale: catches reordering bugs that would break positional concat.
+        """
+        old = ['a', 'b', 'c']
+        new = ['c', 'b', 'a']
+        result, out = self._capture(check_columns_match, old, new)
+        # match is False
+        self.assertFalse(result)
+        # order-mismatch hint is surfaced
+        self.assertIn('order of shared columns differs', out)
+
+
+# ---------- read_xlsx_preserving_qualifiers ----------
+
+class ReadXlsxPreservingQualifiersTests(unittest.TestCase):
+    """Recover '<x' / '>x' display-formatted values from xlsx cells."""
+
+    def _make_xlsx(self, dirpath):
+        """Build a tiny xlsx with one '\\< 0.000' formatted cell, one plain float,
+        and one plain text cell. Returns the file path."""
+        import openpyxl
+        from openpyxl.styles import NamedStyle  # noqa: F401 — not used but imports openpyxl side-effects
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = 'Upload'
+        ws.append(['Compound', 'Mean Papp'])
+        # Row 2: qualifier-formatted cell
+        ws.append(['TEST-0001', 0.384])
+        ws.cell(row=2, column=2).number_format = r'\<\ 0.000'
+        # Row 3: plain numeric cell
+        ws.append(['TEST-0002', 5.5])
+        # Row 4: plain text cell
+        ws.append(['TEST-0003', 'NQ'])
+        path = f'{dirpath}/qualifiers.xlsx'
+        wb.save(path)
+        return path
+
+    def test_qualifier_cell_becomes_string(self):
+        """
+        Input    : xlsx cell value=0.384, format='\\< 0.000'.
+        Expected : column value is the string '< 0.384'.
+        Rationale: regression test for the exact bug in the Wuxi xlsx
+                   where '<' was hidden in Excel format and lost on read.
+        """
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            path = self._make_xlsx(d)
+            df = read_xlsx_preserving_qualifiers(path, 'Upload')
+        # qualifier-formatted cell came back as the displayed string
+        self.assertEqual(df.iloc[0]['Mean Papp'], '< 0.384')
+
+    def test_plain_numeric_cell_unchanged(self):
+        """
+        Input    : xlsx cell value=5.5, format='General'.
+        Expected : column value is the float 5.5.
+        Rationale: don't disturb cells that didn't have a qualifier format.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = self._make_xlsx(d)
+            df = read_xlsx_preserving_qualifiers(path, 'Upload')
+        # plain numeric cell passes through unchanged
+        self.assertEqual(df.iloc[1]['Mean Papp'], 5.5)
+
+    def test_plain_text_cell_unchanged(self):
+        """
+        Input    : xlsx cell value='NQ' (text), no special format.
+        Expected : column value is the string 'NQ'.
+        Rationale: existing text cells must not be re-interpreted.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = self._make_xlsx(d)
+            df = read_xlsx_preserving_qualifiers(path, 'Upload')
+        # text cell passes through unchanged
+        self.assertEqual(df.iloc[2]['Mean Papp'], 'NQ')
+
+
+# ---------- validate_pivoted_output ----------
+
+class ValidatePivotedOutputTests(unittest.TestCase):
+    """Run the validate_pivoted_output check suite on synthetic small DataFrames."""
+
+    def _good_df(self):
+        """A small wide-format DataFrame that should pass every check."""
+        return pd.DataFrame({
+            'Molecule Name':                    ['SRB-0000001', 'SRB-0000002'],
+            'Batch Molecule-Batch ID':          ['SRB-0000001-001', 'SRB-0000002-001'],
+            'Mean Papp A to B':                 [10.0, 5.0],
+            'Mean Papp B to A':                 [20.0, 10.0],
+            'Efflux ratio':                     [2.0, 2.0],
+            'Mean Papp A to B - PgP Inhibitor': [4.0, 2.0],
+            'Mean Papp B to A - PgP inhibitor': [4.0, 2.0],
+            'Efflux ratio - PgP inhibitor':     [1.0, 1.0],
+        })
+
+    def _capture(self, fn, *a, **kw):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            r = fn(*a, **kw)
+        return r, buf.getvalue()
+
+    def test_passes_on_clean_input(self):
+        """
+        Input    : well-formed ids, batch ids prefixed correctly, consistent efflux.
+        Expected : returns True; final line says 'PASS'.
+        Rationale: confirms no check spuriously fires on good data.
+        """
+        result, out = self._capture(validate_pivoted_output, self._good_df())
+        # all checks pass
+        self.assertTrue(result)
+        self.assertIn('PASS', out)
+
+    def test_flags_bad_molecule_name(self):
+        """
+        Input    : Molecule Name 'NOT-AN-ID' (doesn't match SRB-\\d{7}).
+        Expected : returns False; the relevant check shows 'FAIL'.
+        Rationale: id-format regression — exactly the class of bug the user
+                   asked to catch.
+        """
+        df = self._good_df()
+        df.loc[0, 'Molecule Name'] = 'NOT-AN-ID'
+        result, out = self._capture(validate_pivoted_output, df)
+        # whole suite fails
+        self.assertFalse(result)
+        # specifically the molecule-name check fired
+        self.assertIn('Molecule Name matches', out)
+        self.assertIn('FAIL', out)
+
+    def test_flags_batch_id_prefix_mismatch(self):
+        """
+        Input    : Batch ID 'SRB-9999999-001' for compound 'SRB-0000001'.
+        Expected : returns False; the prefix-check fails.
+        Rationale: direct analog of the Wuxi oversight — batch id detached
+                   from the compound.
+        """
+        df = self._good_df()
+        df.loc[0, 'Batch Molecule-Batch ID'] = 'SRB-9999999-001'
+        result, out = self._capture(validate_pivoted_output, df)
+        # whole suite fails
+        self.assertFalse(result)
+        # specifically the prefix check fired
+        self.assertIn('Batch Molecule-Batch ID starts with', out)
+
+    def test_flags_efflux_ratio_inconsistency(self):
+        """
+        Input    : Efflux ratio is 99 (wildly wrong vs Papp B→A / Papp A→B = 2).
+        Expected : returns False; the efflux-consistency check fails.
+        Rationale: catches transposed columns or formula errors.
+        """
+        df = self._good_df()
+        df.loc[0, 'Efflux ratio'] = 99.0
+        result, out = self._capture(validate_pivoted_output, df)
+        # whole suite fails
+        self.assertFalse(result)
+        # specifically the efflux ratio check fired
+        self.assertIn('Efflux ratio', out)
+
+    def test_flags_duplicate_compound(self):
+        """
+        Input    : same (Molecule Name, Batch Molecule-Batch ID) on two rows.
+        Expected : returns False; uniqueness check fails.
+        Rationale: catches accidental wide-format dupes.
+        """
+        df = self._good_df()
+        df.loc[1, 'Molecule Name'] = df.loc[0, 'Molecule Name']
+        df.loc[1, 'Batch Molecule-Batch ID'] = df.loc[0, 'Batch Molecule-Batch ID']
+        result, out = self._capture(validate_pivoted_output, df)
+        # whole suite fails
+        self.assertFalse(result)
+        # specifically the uniqueness check fired
+        self.assertIn('Unique', out)
 
 
 if __name__ == '__main__':
