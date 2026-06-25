@@ -66,7 +66,7 @@ UDF field catalog, and end-to-end examples.
 | Path | Purpose |
 |---|---|
 | [python/get_library.py](python/get_library.py) | Export CDD collections to CSV / SDF / `pandas.DataFrame` |
-| [python/download_cdd_structures.py](python/download_cdd_structures.py) | Fetch compound structure PNGs for a saved search |
+| [python/download_cdd_structures.py](python/download_cdd_structures.py) | Fetch compound structure PNGs for a saved search — see [docs/download_cdd_structures.md](docs/download_cdd_structures.md) |
 | [python/convert_dataset.py](python/convert_dataset.py) | `convert_to_target_format` — long→wide pivot for MDR1-style data |
 | [vignettes/](vignettes/) | Jupyter walkthroughs — `Sample_library_download.ipynb`, `convert_dataset.ipynb` |
 | [tests/](tests/) | `unittest` suite (run with `python -m unittest discover tests`) |
