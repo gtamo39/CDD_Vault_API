@@ -584,7 +584,8 @@ def get_df(
     Args:
         vault (int): CDD Vault numeric ID.
         collections: collection names — list[str] or 'AJ,AK'. Mutually
-            exclusive with collection_ids.
+            exclusive with collection_ids. Pass an empty list (collections=[])
+            to fetch every collection in the vault.
         collection_ids: numeric collection IDs — list[int|str] or '931034,931035'.
             Mutually exclusive with collections.
         columns: requested columns — list[str] or comma-separated string.
@@ -602,9 +603,13 @@ def get_df(
 
     names = _normalize_arg(collections)
     ids = _normalize_arg(collection_ids)
-    if not names and not ids:
+    # collections=[] (provided but empty) is an explicit "fetch all" request;
+    # collections=None (omitted) still requires one of the two args.
+    fetch_all = collections is not None and not names and not ids
+    if not fetch_all and not names and not ids:
         raise ValueError(
-            "must supply collections=['AJ',...] or collection_ids=[931034,...]"
+            "must supply collections=['AJ',...], collection_ids=[931034,...], "
+            "or collections=[] to fetch all collections"
         )
     if names and ids:
         raise ValueError(
@@ -615,7 +620,12 @@ def get_df(
         token = load_token(token_file)
     session = make_session(token)
 
-    if names:
+    if fetch_all:
+        resolved = [
+            (c["name"], c["id"]) for c in list_collections(session, vault)
+            if c.get("name") and c.get("id") is not None
+        ]
+    elif names:
         resolved = resolve_collections(session, vault, names=names)
     else:
         resolved = resolve_collections(session, vault, ids=ids)
@@ -658,6 +668,8 @@ def main():
     g.add_argument("--collections", help="Comma-separated names, e.g. AJ,AK")
     g.add_argument("--collection-ids",
                    help="Comma-separated numeric IDs")
+    g.add_argument("--all-collections", action="store_true",
+                   help="Export every collection in the vault.")
     ap.add_argument("--token-file", default="~/.cdd_token")
     ap.add_argument("--output", default="./library.csv")
     ap.add_argument("--columns", default="collection,name,smiles")
@@ -674,13 +686,18 @@ def main():
                          "with coverage counts, then exit.")
     args = ap.parse_args()
 
-    if not args.collections and not args.collection_ids:
-        sys.exit("ERR: must supply --collections or --collection-ids")
+    if not args.collections and not args.collection_ids and not args.all_collections:
+        sys.exit("ERR: must supply --collections, --collection-ids, or --all-collections")
 
     token = load_token(args.token_file)
     session = make_session(token)
 
-    if args.collections:
+    if args.all_collections:
+        resolved = [
+            (c["name"], c["id"]) for c in list_collections(session, args.vault)
+            if c.get("name") and c.get("id") is not None
+        ]
+    elif args.collections:
         names = [n.strip() for n in args.collections.split(",") if n.strip()]
         resolved = resolve_collections(session, args.vault, names=names)
     else:

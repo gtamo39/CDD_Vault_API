@@ -45,8 +45,9 @@ full signature.
 | Flag                 | Type        | Default                       | Description                                                                                                |
 | -------------------- | ----------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `--vault N`          | int         | `7108`                        | CDD Vault numeric ID.                                                                                      |
-| `--collections "A,B"`| str         | _required (or `--collection-ids`)_ | Comma-separated collection **names** to export. Mutually exclusive with `--collection-ids`.           |
-| `--collection-ids "I,J"` | str     | _required (or `--collections`)_ | Comma-separated numeric **collection IDs**. Useful when names are ambiguous.                              |
+| `--collections "A,B"`| str         | _one of these three required_ | Comma-separated collection **names** to export. Mutually exclusive with `--collection-ids` / `--all-collections`. |
+| `--collection-ids "I,J"` | str     | _one of these three required_ | Comma-separated numeric **collection IDs**. Useful when names are ambiguous.                              |
+| `--all-collections`  | flag        | off                           | Export **every** collection in the vault. Mutually exclusive with `--collections` / `--collection-ids`.    |
 | `--token-file PATH`  | path        | `~/.cdd_token`                | File containing the API token on one line.                                                                  |
 | `--output PATH`      | path        | `./library.csv`               | Where to write the file. Parent directory created if missing. UTF-8. Extension drives the default format (`.sdf` → SDF, anything else → CSV) unless `--format` overrides. |
 | `--columns "a,b,c"`  | str         | `collection,name,smiles`      | Comma-separated column list. Names are resolved across five namespaces (see [Column resolution](#column-resolution)). Names may contain spaces if shell-quoted (e.g. `"Lib ID"`). In SDF mode, each column becomes a property tag. |
@@ -186,7 +187,10 @@ df = get_df(
 Each argument maps one-to-one to a CLI flag — see the [CLI arguments](#cli-arguments)
 table for the same defaults and semantics. The only differences:
 
-- `collections` accepts either a list (`['AJ', 'AK']`) or comma string (`'AJ,AK'`)
+- `collections` accepts either a list (`['AJ', 'AK']`) or comma string (`'AJ,AK'`).
+  Pass an **empty list** (`collections=[]`) to fetch every collection in the
+  vault — the equivalent of the CLI's `--all-collections`. `collections=None`
+  (the default) still requires one of `collections` / `collection_ids`.
 - `collection_ids` likewise
 - `columns` likewise; default is `['collection', 'name', 'smiles']`
 - `verbose=False` suppresses the per-collection progress prints
@@ -554,6 +558,19 @@ python3 python/get_library.py \
   --vault 7108 --collection-ids 931034,931035 \
   --output ./library.csv
 ```
+
+**Export the entire vault** — every collection, no need to list names:
+
+```bash
+python3 python/get_library.py \
+  --vault 7108 --all-collections \
+  --output ./library_all.csv
+```
+
+The Python equivalent is `get_df(vault=7108, collections=[])`. Note a molecule
+that belongs to several collections is emitted once per collection (with the
+matching `collection` value), so the full-vault export can contain duplicate
+structures across `collection` groups.
 
 **Wide export** with batch identifiers and screening metadata:
 
