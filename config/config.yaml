@@ -1,0 +1,192 @@
+# CDD Vault configuration — per-protocol import mappings for the Slurps API.
+#
+# Consumed by python/import_to_protocol.py (see docs/import_to_protocol.md).
+# Single source of truth for "which upload-file column feeds which CDD readout".
+#
+# How to (re)populate a protocol block:
+#   python3 python/import_to_protocol.py --vault 7108 --describe-protocol <PID>
+# then copy each readout's `name` and `id` into the `readouts:` map below.
+
+vault: 7108
+
+protocols:
+
+  131399:
+    name: MDR1-MDCK II Inhibitor
+    alias: mdck                        # short name for get_protocol_data --experiments
+    # CDD project the data belongs to (the "Project" dropdown in the web UI).
+    project: FBXO31
+    # Saved mapping-template name (web UI "Templates" tab). Encodes the parser
+    # type (Tabular) + field->readout map. Fill in once you've saved one.
+    mapping_template: "MDCK-MDR1"
+    # Batch key CDD matches on — the SRB-XXXXXXX-NNN value links the molecule,
+    # so the batch id alone identifies each record.
+    identifiers:
+      batch_id: "Batch Molecule-Batch ID"
+    # Columns present in the file but intentionally not imported (no error).
+    ignore:
+      - "Molecule Name"
+      - "Run Lab"
+    # Upload-file column name  ->  CDD readout-definition id.
+    # Keys MUST match the upload file header exactly (spelling, spacing, case,
+    # and the inconsistent "PgP/Pgp inhibitor/Inhibitor" suffixes are real).
+    readouts:
+      "Study number": 1883900
+      "Date": 1883901
+      "Cell line": 1883911
+      "Mean Papp A to B": 1883902
+      "Mean Papp B to A": 1883903
+      "Efflux ratio": 1883904
+      "Mean %Solution Recovery A to B": 1883905
+      "Mean %Solution Recovery B to A": 1883906
+      "Provider Comment": 1883907
+      "Serac Comment": 1883908
+      "Permeability Class": 1883909
+      "Pgp substrate": 1883912
+      "Provider Name": 1883910
+      "Study number - PgP inhibitor": 1883915
+      "Date - PgP inhibitor": 1883916
+      "Cell line - PgP inhibitor": 1883917
+      "Mean Papp A to B - PgP Inhibitor": 1883919
+      "Mean Papp B to A - PgP inhibitor": 1883921
+      "Efflux ratio - PgP inhibitor": 1883922
+      "Mean %Solution Recovery A to B - PgP inhibitor": 1883923
+      "Mean %Solution Recovery B to A - PgP inhibitor": 1883924
+      "Provider Comment - PgP inhibitor": 1883925
+      "Serac Comment - PgP inhibitor": 1883926
+      "Permeability Class - PgP inhibitor": 1883927
+      "Pgp substrate - Pgp inhibitor": 1883929
+      "Provider Name - PgP inhibitor": 1883930
+
+  # --- ADME assays (raw WuXi "Upload"-sheet exports) ---
+  # These files use Compound ID + Batch No as identifiers (NOT the converted
+  # Batch Molecule-Batch ID). `Run Lab` and a duplicate `Provider Name` (=WuXi)
+  # are added by the "From XLS to CDD upload (ADME)" prep tool -> ignored.
+  # NOTE: `Comment` -> Serac comment is an inference; confirm against each
+  # template's field mapping in the CDD web UI.
+
+  85979:
+    name: LogD
+    alias: logd
+    project: FBXO31
+    mapping_template: "LogD"
+    identifiers:
+      compound_id: "Compound ID"
+      batch_no: "Batch No"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1073387
+      "Study Date": 1073388
+      "LogD7.4 (Oct/buff) result": 1073389
+      "Provider Comment": 1073390
+      "Provider Name": 1073391
+      "Comment": 1073392
+
+  86015:
+    name: Thermodynamic Solubility
+    alias: solubility
+    project: FBXO31
+    mapping_template: "Thermosl upload"
+    identifiers:
+      compound_id: "Compound ID"
+      batch_no: "Batch No"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1073996
+      "Date": 1073997
+      "Media": 1073998
+      "Thermodynamic Solubility (μg/mL)": 1073999
+      "Thermodynamic Solubility (μM)": 1074000
+      "Provider Comment": 1074001
+      "Provider Name": 1074002
+      "Comment": 1074003
+
+  125963:
+    name: Plasma protein binding (UC)
+    alias: ppb
+    project: FBXO31
+    mapping_template: "PPB"
+    identifiers:
+      compound_id: "Compound ID"
+      batch_no: "Batch No"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1773615
+      "Date": 1773616
+      "Species": 1773617
+      "%Unbound": 1773618
+      "%Bound": 1773619
+      "%Remaining": 1773623
+      "Provider Comment": 1773620
+      "Provider Name": 1773621
+      "Comment": 1773622
+
+  # --- Microsomal stability (split by species from the MMS file) ---
+  # Feed the per-species files from split_species.py:
+  #   ..._MMS_..._Human_upl.csv  -> 88861
+  #   ..._MMS_..._Mouse_upl.csv  -> 88862
+  # Column names match whitespace-insensitively, so the multi-line headers
+  # (e.g. "CLint (raw)\r\r\n(μL/min/mg)") match these clean keys.
+  # `Comment` -> Serac Comment is an inference; confirm vs each template.
+
+  88861:
+    name: Microsomal stability species human
+    alias: hlm
+    project: FBXO31
+    mapping_template: "Microsomal stability - human"
+    identifiers:
+      compound_id: "Compound ID"
+      batch_no: "Batch No"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1113176
+      "Date": 1113177
+      "species": 1113178
+      "T½ (min)": 1113179
+      "CLint (raw) (μL/min/mg)": 1113180
+      "Remaining (T=60min)": 1113186
+      "Remaining (No co factor=60min)": 1113187
+      "Provider Comment": 1113183
+      "Comment": 1113184
+      "Provider Name": 1113185
+
+  88862:
+    name: Microsomal stability species mouse
+    alias: mlm
+    project: FBXO31
+    mapping_template: "Microsomal stability - mouse"
+    identifiers:
+      compound_id: "Compound ID"
+      batch_no: "Batch No"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1113188
+      "Date": 1113189
+      "species": 1113190
+      "T½ (min)": 1113191
+      "CLint (raw) (μL/min/mg)": 1113192
+      "Remaining (T=60min)": 1113193
+      "Remaining (No co factor=60min)": 1113194
+      "Provider Comment": 1113195
+      "Comment": 1113196
+      "Provider Name": 1113197
+
+  # --- Extraction-only so far (no import mapping yet — no upload files) ---
+  # get_protocol_data reads readout names from the API, so only alias + PID are
+  # needed here. Add identifiers/ignore/readouts/mapping_template if/when these
+  # are imported to.
+
+  85977:
+    name: Caco-2 permeability
+    alias: caco2
+    project: FBXO31
+
+  111161:
+    name: Microsomal stability species rat
+    alias: rlm
+    project: FBXO31
