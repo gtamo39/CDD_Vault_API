@@ -351,8 +351,14 @@ def submit_slurp(session, vault, file_path, payload):
         )
     if r.status_code not in (200, 201):
         # Auth / endpoint errors carry an API message, not row data — safe to show.
-        # 400/422 (validation) may echo column values, so stay metadata-only there.
-        detail = f" body={r.text[:300]!r}" if r.status_code in (401, 403, 404) else ""
+        # 400/422 (validation) may echo column values, so write the body to a LOCAL
+        # file (never stdout/the wire) and print only its path for the user to read.
+        if r.status_code in (401, 403, 404):
+            detail = f" body={r.text[:300]!r}"
+        else:
+            errp = p.with_suffix(p.suffix + ".slurp_error.txt")
+            errp.write_text(r.text, encoding="utf-8")
+            detail = f" body written to {errp} (local only — read it; may contain data)"
         sys.exit(f"ERR submit status={r.status_code} "
                  f"body_len={len(r.content)}{detail}")
     obj = r.json()

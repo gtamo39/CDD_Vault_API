@@ -58,21 +58,19 @@ protocols:
       "Pgp substrate - Pgp inhibitor": 1883929
       "Provider Name - PgP inhibitor": 1883930
 
-  # --- ADME assays (raw WuXi "Upload"-sheet exports) ---
-  # These files use Compound ID + Batch No as identifiers (NOT the converted
-  # Batch Molecule-Batch ID). `Run Lab` and a duplicate `Provider Name` (=WuXi)
-  # are added by the "From XLS to CDD upload (ADME)" prep tool -> ignored.
-  # NOTE: `Comment` -> Serac comment is an inference; confirm against each
-  # template's field mapping in the CDD web UI.
+  # --- ADME assays ---
+  # Identifier is `Molecule-Batch ID` — this is the raw WuXi column name AND what
+  # the ADME CDD templates (LogD/PPB/Thermosl upload) map on. Do NOT rename it to
+  # `Batch Molecule-Batch ID` (that's MDR1-only). `Run Lab` (if present) is ignored;
+  # `Comment` -> Serac comment is an inference.
 
   85979:
     name: LogD
     alias: logd
     project: FBXO31
-    mapping_template: "LogD"
+    mapping_template: "LogD_GT"    # rebuilt 2026-07-07 from the new WuXi layout
     identifiers:
-      compound_id: "Compound ID"
-      batch_no: "Batch No"
+      batch_id: "Molecule-Batch ID"
     ignore:
       - "Run Lab"
     readouts:
@@ -87,10 +85,9 @@ protocols:
     name: Thermodynamic Solubility
     alias: solubility
     project: FBXO31
-    mapping_template: "Thermosl upload"
+    mapping_template: "TSY_GT"    # rebuilt 2026-07-07 from the new WuXi layout
     identifiers:
-      compound_id: "Compound ID"
-      batch_no: "Batch No"
+      batch_id: "Molecule-Batch ID"
     ignore:
       - "Run Lab"
     readouts:
@@ -107,10 +104,9 @@ protocols:
     name: Plasma protein binding (UC)
     alias: ppb
     project: FBXO31
-    mapping_template: "PPB"
+    mapping_template: "PPB_GT"    # rebuilt 2026-07-07 from the new WuXi layout
     identifiers:
-      compound_id: "Compound ID"
-      batch_no: "Batch No"
+      batch_id: "Molecule-Batch ID"
     ignore:
       - "Run Lab"
     readouts:
