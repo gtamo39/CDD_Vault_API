@@ -134,6 +134,23 @@ python3 python/import_to_protocol.py --vault 7108 \
 protocol's **Runs** tab in the web UI — see CDD's guide:
 [How do I delete a run of a protocol?](https://support.collaborativedrug.com/hc/en-us/articles/214358663-How-do-I-delete-a-run-of-a-protocol)
 
+### Drag-drop import web app (local only)
+
+Prefer a UI over the CLI? [webapp/](webapp/) is a local FastAPI app that wraps
+the same pipeline: drop WuXi `.xlsx` workbooks, it reads each **Upload** tab,
+auto-detects the protocol from the columns (change it via a dropdown), splits
+microsomal files by species, and — once every row is confirmed (the **Submit**
+button turns from grey to green) — submits the batch to CDD and tracks each run's
+progress.
+
+```bash
+cdd/bin/python webapp/app.py     # from the repo root; then open http://127.0.0.1:8000
+```
+
+Localhost only by design — it handles SMILES/compound data, so it never binds off
+this machine and the CDD token stays server-side (needs a **read/write**
+`~/.cdd_token` to submit). Staged files live in a temp dir, never in the repo.
+
 ## Extract protocol (assay) data
 
 Pull each protocol's readout data back out of CDD, joined with molecule SMILES,
@@ -171,6 +188,9 @@ walks through it step by step.
 | [python/import_to_protocol.py](python/import_to_protocol.py) | Bulk-import a data file into a CDD protocol (Slurps API); `--list-protocols` finds the PID — see [docs/import_to_protocol.md](docs/import_to_protocol.md) |
 | [python/get_protocol_data.py](python/get_protocol_data.py) | Extract protocol assay data + SMILES into one wide table (latest per compound); pick assays by alias (`--experiments logd,ppb`) — see [docs/get_protocol_data.md](docs/get_protocol_data.md) |
 | [python/split_species.py](python/split_species.py) | Split an `_upl.csv` into one CSV per species (e.g. MMS → `_Human_upl.csv` / `_Mouse_upl.csv`); Python port of the ADME HTML tool's species split |
+| [python/convert_upload.py](python/convert_upload.py) | Turn a raw WuXi `.xlsx` **Upload** tab into CDD-ready rows (qualifiers, ISO dates, blank-id drop, MDR1 identifier rename, species split) |
+| [python/detect_protocol.py](python/detect_protocol.py) | Guess a file's CDD protocol from its column signature (config-driven) |
+| [webapp/](webapp/) | Local-only FastAPI drag-drop import app (`cdd/bin/python webapp/app.py`) — reuses the modules above |
 | [python/convert_dataset.py](python/convert_dataset.py) | `convert_to_target_format` — long→wide pivot for MDR1-style data |
 | [vignettes/](vignettes/) | Jupyter walkthroughs — `Sample_library_download.ipynb`, `convert_dataset.ipynb`, `sample_protocol_download.ipynb` |
 | [tests/](tests/) | `unittest` suite (run with `python -m unittest discover tests`) |

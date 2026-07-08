@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WuXi → CDD import</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Newsreader:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f4f1ea; --card:#fffdf7; --ink:#2b2723; --muted:#6f675c; --line:#e3ddd0;
+    --terracotta:#b4471f; --terracotta-soft:#e9d4c8;
+    --olive:#6b7233; --olive-soft:#e6e7d4;
+    --display:"Fraunces",Georgia,serif; --body:"Newsreader",Georgia,serif;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--paper); color:var(--ink); font-family:var(--body);
+    font-size:18px; line-height:1.55; -webkit-font-smoothing:antialiased;
+    min-height:100vh; display:flex; justify-content:center; padding:48px 20px;
+  }
+  .wrap{width:100%;max-width:860px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--terracotta);margin:0 0 10px}
+  h1{font-family:var(--display);font-weight:600;font-size:40px;line-height:1.05;letter-spacing:-.01em;margin:0 0 12px}
+  .lede{font-size:18px;color:var(--muted);margin:0 0 28px;max-width:60ch}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px;box-shadow:0 1px 0 rgba(0,0,0,.02),0 16px 40px -28px rgba(43,39,35,.35)}
+  .drop{border:2px dashed var(--terracotta-soft);border-radius:12px;background:linear-gradient(180deg,#fffefb,#fffdf7);padding:40px 24px;text-align:center;cursor:pointer;transition:border-color .15s ease,background .15s ease,transform .05s ease}
+  .drop:hover{border-color:var(--terracotta)}
+  .drop.drag{border-color:var(--terracotta);background:#fbf2ec;transform:translateY(-1px)}
+  .drop .icon{font-family:var(--display);font-size:34px;color:var(--terracotta);display:block;margin-bottom:8px}
+  .drop strong{font-family:var(--display);font-weight:600}
+  .drop .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:10px;letter-spacing:.04em}
+  input[type=file]{display:none}
+
+  .panel{margin-top:22px;display:none}
+  .panel.show{display:block}
+  table.units{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px}
+  table.units th{text-align:left;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:500;padding:0 10px 8px 0;border-bottom:1px solid var(--line)}
+  table.units td{padding:11px 10px 11px 0;border-top:1px solid var(--line);vertical-align:top}
+  table.units tr:first-child td{border-top:none}
+  .fname{color:var(--ink);word-break:break-word}
+  .fname small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+  select{font-family:var(--mono);font-size:12.5px;color:var(--ink);background:#fffefb;border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px;width:100%}
+  select:focus{outline:none;border-color:var(--terracotta)}
+  .rows{color:var(--muted);white-space:nowrap}
+  .tag{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:6px;white-space:nowrap;display:inline-block}
+  .tag.ok{background:var(--olive-soft);color:var(--olive)}
+  .tag.err{background:var(--terracotta-soft);color:var(--terracotta)}
+  .tag.wait{background:#eee8db;color:var(--muted)}
+  .sub{display:block;color:var(--muted);font-size:11px;margin-top:5px;text-transform:none;letter-spacing:0}
+  .sub a{color:var(--terracotta)}
+
+  .actions{display:flex;gap:12px;align-items:center;margin-top:22px;flex-wrap:wrap}
+  .btn{appearance:none;border:none;cursor:pointer;font-family:var(--mono);font-size:13px;letter-spacing:.04em;padding:11px 20px;border-radius:9px;transition:filter .15s ease,background .15s ease}
+  /* grey when not ready, green when every row is confirmed */
+  .btn.submit{background:#cdc7ba;color:#fff;cursor:default}
+  .btn.submit.ready{background:var(--olive);color:#fff;cursor:pointer}
+  .btn.submit.ready:hover{filter:brightness(1.06)}
+  .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);cursor:pointer}
+  .gate{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .note{margin-top:26px;font-size:14.5px;color:var(--muted);border-left:3px solid var(--olive-soft);padding:2px 0 2px 14px}
+  .note b{color:var(--olive);font-weight:500}
+  .note code{font-family:var(--mono);font-size:12.5px;background:#eee8db;padding:1px 5px;border-radius:4px}
+  footer{margin-top:30px;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.05em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">CDD Vault utility · local only</p>
+  <h1>WuXi&nbsp;&rarr;&nbsp;CDD import</h1>
+  <p class="lede">Drop WuXi report workbooks. Each file&rsquo;s <b>&ldquo;Upload&rdquo;</b> tab is read, the protocol is auto-detected from its columns (change it if needed), microsomal files split by species, and — once every row is confirmed — the whole batch is submitted to CDD Vault as new runs.</p>
+
+  <div class="card">
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose or drop Excel files">
+      <span class="icon">↑</span>
+      <strong>Drop Excel workbooks here</strong>
+      <div class="hint">or click to choose · .xlsx with an “Upload” tab</div>
+    </div>
+    <input type="file" id="file" multiple accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+
+    <div class="panel" id="panel">
+      <table class="units">
+        <thead><tr><th>File</th><th>Protocol</th><th>Rows</th><th>Status</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="actions">
+        <button class="btn submit" id="submit" disabled>Submit to CDD</button>
+        <button class="btn ghost" id="clear">Clear</button>
+        <span class="gate" id="gate"></span>
+      </div>
+    </div>
+
+    <p class="note"><b>Private &amp; local.</b> Files are parsed on this machine; only column names and counts are shown here. The CDD token stays server-side. Nothing is written into the repo.</p>
+  </div>
+
+  <footer id="foot">idle</footer>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

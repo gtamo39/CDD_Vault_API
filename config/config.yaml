@@ -133,6 +133,10 @@ protocols:
     alias: hlm
     project: FBXO31
     mapping_template: "Microsomal stability - human"
+    # Species value (in the file's Species column) that routes to this protocol.
+    # Human + Mouse share identical readouts, so detection ties on columns alone;
+    # the split-by-Species value is what picks the PID.
+    species: Human
     identifiers:
       compound_id: "Compound ID"
       batch_no: "Batch No"
@@ -155,6 +159,7 @@ protocols:
     alias: mlm
     project: FBXO31
     mapping_template: "Microsomal stability - mouse"
+    species: Mouse
     identifiers:
       compound_id: "Compound ID"
       batch_no: "Batch No"

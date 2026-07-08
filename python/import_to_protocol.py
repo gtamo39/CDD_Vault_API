@@ -61,6 +61,19 @@ from get_library import API_BASE, load_token, make_session
 TERMINAL_STATES = {"committed", "rejected", "invalid", "canceled"}
 SUCCESS_STATE = "committed"
 
+
+class SlurpError(Exception):
+    """A slurp submit failed. Carries the HTTP status, a short safe message, and
+    (for a 422 template mismatch) CDD's mapping-editor `web_url` + the local file
+    the full response body was written to. Lets callers (CLI or webapp) react
+    without the core function calling sys.exit."""
+
+    def __init__(self, message, status=None, web_url=None, body_file=None):
+        super().__init__(message)
+        self.status = status
+        self.web_url = web_url
+        self.body_file = body_file
+
 # Content types CDD accepts for a slurp, keyed by file extension.
 MIME_BY_EXT = {
     ".csv": "text/csv",
@@ -258,6 +271,24 @@ def write_cleaned_csv(src_path, block, dst_path):
     return (len(kept) - 1, dropped)
 
 
+def evaluate_mapping(header, block, missing_id_rows=0):
+    """Pure mapping verdict from a header + config block (no file, no network).
+
+    The library-safe core of check_mapping: the webapp calls this on a converted
+    header. Returns {mapped, ignored, unmapped, missing, missing_id_rows, ok}.
+    ok = no UNMAPPED columns and no empty-identifier rows.
+    """
+    mapped, ignored, unmapped, missing = validate_header(header, block)
+    return {
+        "mapped": mapped,
+        "ignored": ignored,
+        "unmapped": unmapped,
+        "missing": missing,
+        "missing_id_rows": missing_id_rows or 0,
+        "ok": not unmapped and not missing_id_rows,
+    }
+
+
 def check_mapping(file_path, config_path, pid):
     """Offline pre-flight: header lines up with config + no empty-identifier rows.
 
@@ -265,8 +296,10 @@ def check_mapping(file_path, config_path, pid):
     values to COUNT blanks (never prints them). No network."""
     block = load_protocol_mapping(config_path, pid)
     header = read_header(file_path)
-    mapped, ignored, unmapped, missing = validate_header(header, block)
     total_rows, missing_id_rows = count_rows_missing_identifiers(file_path, block)
+    res = evaluate_mapping(header, block, missing_id_rows)
+    mapped, ignored, unmapped, missing = (
+        res["mapped"], res["ignored"], res["unmapped"], res["missing"])
     print(f"=== mapping check: protocol={pid} name={block.get('name')!r} ===")
     print(f"file={Path(file_path).name}  file_columns={len(header)}  "
           f"config_readouts={len(block.get('readouts') or {})}"
@@ -290,7 +323,7 @@ def check_mapping(file_path, config_path, pid):
         print(f"EMPTY-IDENTIFIER rows ({missing_id_rows}/{total_rows}) — no "
               f"Molecule Name / Batch ID; CDD REJECTS these. Remove them from "
               f"the file before importing.")
-    ok = not unmapped and not missing_id_rows
+    ok = res["ok"]
     problems = []
     if unmapped:
         problems.append("UNMAPPED columns")
@@ -332,16 +365,23 @@ def _build_runs(args):
 
 # ---------- submit + poll ----------
 
-def submit_slurp(session, vault, file_path, payload):
-    """POST the file + payload, return the new slurp id. File is streamed, not read."""
+def submit_slurp(session, vault, file_path, payload, verbose=True):
+    """POST the file + payload, return the new slurp id. File is streamed, not read.
+
+    Raises SlurpError on any non-2xx (so a webapp can handle it gracefully); the
+    CLI wrapper catches it. On a 400/422 validation error the full response body
+    (which MAY echo row data) is written to a LOCAL `<file>.slurp_error.txt`, and
+    only a short safe message + CDD's `web_url` are attached to the exception.
+    """
     p = Path(file_path)
     if not p.exists():
-        sys.exit(f"ERR: file not found: {p}")
+        raise SlurpError(f"file not found: {p}")
     mime = MIME_BY_EXT.get(p.suffix.lower(), "application/octet-stream")
-    print(f"submitting file={p.name} bytes={p.stat().st_size} mime={mime}")
-    print(f"payload_keys={sorted(payload)} project={payload.get('project')!r} "
-          f"mapping_template={payload.get('mapping_template')!r} "
-          f"autoreject={payload.get('autoreject')}")
+    if verbose:
+        print(f"submitting file={p.name} bytes={p.stat().st_size} mime={mime}")
+        print(f"payload_keys={sorted(payload)} project={payload.get('project')!r} "
+              f"mapping_template={payload.get('mapping_template')!r} "
+              f"autoreject={payload.get('autoreject')}")
     with open(p, "rb") as fh:
         r = session.post(
             f"{API_BASE}/vaults/{vault}/slurps",
@@ -351,32 +391,44 @@ def submit_slurp(session, vault, file_path, payload):
         )
     if r.status_code not in (200, 201):
         # Auth / endpoint errors carry an API message, not row data — safe to show.
-        # 400/422 (validation) may echo column values, so write the body to a LOCAL
-        # file (never stdout/the wire) and print only its path for the user to read.
         if r.status_code in (401, 403, 404):
-            detail = f" body={r.text[:300]!r}"
-        else:
-            errp = p.with_suffix(p.suffix + ".slurp_error.txt")
-            errp.write_text(r.text, encoding="utf-8")
-            detail = f" body written to {errp} (local only — read it; may contain data)"
-        sys.exit(f"ERR submit status={r.status_code} "
-                 f"body_len={len(r.content)}{detail}")
+            raise SlurpError(r.text[:300], status=r.status_code)
+        # 400/422 (validation) may echo column values: body -> local file only,
+        # surface just the short `error` string + mapping-editor `web_url`.
+        errp = p.with_suffix(p.suffix + ".slurp_error.txt")
+        errp.write_text(r.text, encoding="utf-8")
+        msg, web_url = "validation failed (see error file)", None
+        try:
+            j = r.json()
+            if isinstance(j, dict):
+                web_url = j.get("web_url")
+                if j.get("error"):
+                    msg = str(j["error"])
+        except ValueError:
+            pass
+        raise SlurpError(msg, status=r.status_code, web_url=web_url, body_file=str(errp))
     obj = r.json()
     sid = obj.get("id")
     if sid is None:
-        sys.exit(f"ERR submit: response had no 'id'; keys={sorted(obj)}")
-    print(f"slurp_id={sid}")
+        raise SlurpError(f"response had no 'id'; keys={sorted(obj)}", status=r.status_code)
+    if verbose:
+        print(f"slurp_id={sid}")
     return sid
+
+
+def slurp_status(session, vault, slurp_id):
+    """One GET of a slurp's current object (no loop). Returns {} shape with a
+    'state' key; on a non-200 the state is 'http_<code>'."""
+    r = session.get(f"{API_BASE}/vaults/{vault}/slurps/{slurp_id}", timeout=60)
+    return r.json() if r.status_code == 200 else {"state": f"http_{r.status_code}"}
 
 
 def poll_slurp(session, vault, slurp_id, interval=5.0, timeout=600.0):
     """Poll the slurp until a terminal state or timeout. Return the final object."""
-    url = f"{API_BASE}/vaults/{vault}/slurps/{slurp_id}"
     waited = 0.0
     while True:
-        r = session.get(url, timeout=60)
-        obj = r.json() if r.status_code == 200 else {}
-        state = obj.get("state", f"http_{r.status_code}")
+        obj = slurp_status(session, vault, slurp_id)
+        state = obj.get("state", "unknown")
         print(f"  slurp={slurp_id} state={state} waited={waited:.0f}s")
         if state in TERMINAL_STATES:
             return obj
@@ -576,7 +628,13 @@ def main():
         print(f"payload={json.dumps(payload, indent=2)}")
         return
 
-    slurp_id = submit_slurp(session, args.vault, work_file, payload)
+    try:
+        slurp_id = submit_slurp(session, args.vault, work_file, payload)
+    except SlurpError as e:
+        detail = (f" web_url={e.web_url}" if e.web_url else "") + \
+                 (f" body_file={e.body_file} (local only — read it; may contain data)"
+                  if e.body_file else "")
+        sys.exit(f"ERR submit status={e.status} {e}{detail}")
     final = poll_slurp(session, args.vault, slurp_id,
                        interval=args.poll_interval, timeout=args.poll_timeout)
     ok = report_outcome(final)
