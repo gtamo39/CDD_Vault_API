@@ -10,9 +10,13 @@ machine — see [CLAUDE.md](CLAUDE.md) for the policy.
 ## Setup
 
 ```bash
-# Virtual env (named "cdd" by convention)
+# Environment (named "cdd" by convention) — venv:
 python3 -m venv cdd
 source cdd/bin/activate
+
+# ...or conda:
+conda create -n cdd python=3.12
+conda activate cdd
 
 # Dependencies
 pip install -r requirements.txt

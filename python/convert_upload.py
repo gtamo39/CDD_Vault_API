@@ -44,6 +44,13 @@ def _norm(s):
     return " ".join(str(s).split()) if s is not None else ""
 
 
+def _unescape_ooxml(s):
+    """Decode OOXML `_xHHHH_` escapes openpyxl leaves literal in some cells (e.g.
+    `_x000D_` = CR in multi-line headers) back to the real char, so `_norm`'s
+    whitespace-collapse then matches clean config keys."""
+    return re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), str(s))
+
+
 def _blank(v):
     """True if a cell is empty / None / whitespace-only."""
     return v is None or str(v).strip() == ""
@@ -67,6 +74,8 @@ def _cell_value(cell):
         return val.date().isoformat()
     if isinstance(val, date):
         return val.isoformat()
+    if isinstance(val, str):
+        return _unescape_ooxml(val)
     return "" if val is None else val
 
 
@@ -91,7 +100,7 @@ def read_upload_sheet(path):
     if not grid:
         return [], []
     keep = [i for i, c in enumerate(grid[0]) if not _blank(c.value)]
-    header = [str(grid[0][i].value).lstrip("﻿").strip() for i in keep]
+    header = [_norm(_unescape_ooxml(grid[0][i].value).lstrip("﻿")) for i in keep]
     rows = []
     for r in grid[1:]:
         row = [_cell_value(r[i]) if i < len(r) else "" for i in keep]

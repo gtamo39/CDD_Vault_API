@@ -132,14 +132,13 @@ protocols:
     name: Microsomal stability species human
     alias: hlm
     project: FBXO31
-    mapping_template: "Microsomal stability - human"
+    mapping_template: "HLM_GT"    # rebuilt 2026-07-09 from the new WuXi layout
     # Species value (in the file's Species column) that routes to this protocol.
     # Human + Mouse share identical readouts, so detection ties on columns alone;
     # the split-by-Species value is what picks the PID.
     species: Human
     identifiers:
-      compound_id: "Compound ID"
-      batch_no: "Batch No"
+      batch_id: "Molecule-Batch ID"
     ignore:
       - "Run Lab"
     readouts:
@@ -158,11 +157,10 @@ protocols:
     name: Microsomal stability species mouse
     alias: mlm
     project: FBXO31
-    mapping_template: "Microsomal stability - mouse"
+    mapping_template: "MLM_GT"    # rebuilt 2026-07-09 from the new WuXi layout
     species: Mouse
     identifiers:
-      compound_id: "Compound ID"
-      batch_no: "Batch No"
+      batch_id: "Molecule-Batch ID"
     ignore:
       - "Run Lab"
     readouts:
