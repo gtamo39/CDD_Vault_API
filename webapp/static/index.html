@@ -65,6 +65,10 @@
   .note b{color:var(--olive);font-weight:500}
   .note code{font-family:var(--mono);font-size:12.5px;background:#eee8db;padding:1px 5px;border-radius:4px}
   footer{margin-top:30px;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.05em}
+  .summary{display:none;margin-top:28px}
+  .summary.show{display:block}
+  .subhead{font-family:var(--display);font-weight:600;font-size:20px;margin:0 0 4px}
+  .subhead + .subnote{font-size:13px;color:var(--muted);margin:0 0 12px}
 </style>
 </head>
 <body>
@@ -90,6 +94,15 @@
         <button class="btn submit" id="submit" disabled>Submit to CDD</button>
         <button class="btn ghost" id="clear">Clear</button>
         <span class="gate" id="gate"></span>
+      </div>
+
+      <div class="summary" id="summary">
+        <h2 class="subhead">Compounds in this batch</h2>
+        <p class="subnote">One row per compound, listing every assay it appears in across the dropped files.</p>
+        <table class="units">
+          <thead><tr><th>Compound</th><th>Run date</th><th>Assays</th></tr></thead>
+          <tbody id="summaryRows"></tbody>
+        </table>
       </div>
     </div>
 

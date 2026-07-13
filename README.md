@@ -29,7 +29,29 @@ python -m ipykernel install --user --name cdd --display-name "Python (CDD)"
 # the Slurps import returns 401 "Token has insufficient access to modify data").
 echo 'YOUR_TOKEN_HERE' > ~/.cdd_token
 chmod 600 ~/.cdd_token
+
+# (Optional) email-on-successful-import — SMTP app password, one line, never commit
+# (path is the `password_file` in the config `notifications:` block)
+echo 'YOUR_APP_PASSWORD' > ~/.MS_pwd.txt
+chmod 600 ~/.MS_pwd.txt
 ```
+
+### Email notification on a successful import (optional)
+
+Set a metadata-only email to fire whenever an import reaches `committed`. Enable
+it in the `notifications:` block of [config/config.yaml](config/config.yaml)
+(recipient/sender/SMTP host), put your Outlook **app password** in the file named
+by the block's `password_file` (`chmod 600` — never committed), then verify SMTP
+works before trusting it on a real run:
+
+```bash
+python3 python/import_to_protocol.py --test-notification   # sends one test email, no upload
+```
+
+The body carries metadata only — protocol name/PID, slurp id, file basename,
+record counts — never SMILES/compound ids/row values. It fires from both the CLI
+(`import_to_protocol.py`) and the drag-drop webapp. A mail failure only logs a
+warning; it never breaks or rolls back the import.
 
 Get the token from CDD Vault → your name (top-right) → **My Account** →
 **API Tokens** → **Generate New Token**. For importing data
@@ -154,6 +176,14 @@ cdd/bin/python webapp/app.py     # from the repo root; then open http://127.0.0.
 Localhost only by design — it handles SMILES/compound data, so it never binds off
 this machine and the CDD token stays server-side (needs a **read/write**
 `~/.cdd_token` to submit). Staged files live in a temp dir, never in the repo.
+
+Below the file table it shows a **per-compound summary** — one row per compound
+batch id listing every assay it appears in across the dropped files (labels from
+each protocol's `label:` in the config). When the batch finishes committing, that
+same table is emailed as the team notification (compound batch ids included — a
+deliberate, owner-authorized exception to the local-only policy; ids + assay
+names only, never the measured values). Requires the `notifications:` transport
+(see above) to actually send.
 
 ## Extract protocol (assay) data
 

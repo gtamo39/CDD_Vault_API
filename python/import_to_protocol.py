@@ -129,18 +129,23 @@ def describe_protocol(session, vault, pid):
 
 # ---------- config + mapping validation ----------
 
+def load_config(config_path):
+    """Read config/config.yaml and return the whole dict. Exits if missing."""
+    import yaml  # lazy — only needed when a config-driven mode is used
+
+    p = Path(config_path)
+    if not p.exists():
+        sys.exit(f"ERR: config not found: {p}")
+    return yaml.safe_load(p.read_text()) or {}
+
+
 def load_protocol_mapping(config_path, pid):
     """Read config/config.yaml and return the block for protocol `pid`.
 
     Returns a dict with 'name', 'identifiers', 'readouts' (column -> readout id).
     Exits if the file or the protocol block is missing.
     """
-    import yaml  # lazy — only needed when a config-driven mode is used
-
-    p = Path(config_path)
-    if not p.exists():
-        sys.exit(f"ERR: config not found: {p}")
-    cfg = yaml.safe_load(p.read_text()) or {}
+    cfg = load_config(config_path)
     protos = cfg.get("protocols") or {}
     block = protos.get(pid) or protos.get(str(pid))
     if block is None:
@@ -543,14 +548,21 @@ def main():
     ap.add_argument("--poll-timeout", type=float, default=600.0)
     ap.add_argument("--dry-run", action="store_true",
                     help="Validate inputs and print the payload; post nothing.")
+    ap.add_argument("--test-notification", action="store_true",
+                    help="Send one test email using the config `notifications` "
+                         "block (no token, no upload), then exit.")
     args = ap.parse_args()
 
-    # Offline mode — no token / network needed.
+    # Offline modes — no token / network needed.
     if args.check_mapping:
         if not args.file or args.protocol is None:
             sys.exit("ERR: --check-mapping needs --file and --protocol")
         ok = check_mapping(args.file, args.config, args.protocol)
         sys.exit(0 if ok else 1)
+
+    if args.test_notification:
+        import notify
+        sys.exit(0 if notify.send_test(load_config(args.config)) else 1)
 
     token = load_token(args.token_file)
     session = make_session(token)
@@ -638,6 +650,15 @@ def main():
     final = poll_slurp(session, args.vault, slurp_id,
                        interval=args.poll_interval, timeout=args.poll_timeout)
     ok = report_outcome(final)
+    if ok:
+        import notify
+        block = load_protocol_mapping(args.config, args.protocol) if args.protocol else {}
+        notify.notify_committed(
+            load_config(args.config),
+            protocol_name=block.get("name", project), pid=args.protocol,
+            slurp_id=slurp_id, filename=args.file,
+            records_committed=final.get("records_committed"),
+            total_records=final.get("total_records"))
     sys.exit(0 if ok else 1)
 
 

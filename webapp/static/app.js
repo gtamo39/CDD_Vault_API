@@ -6,11 +6,13 @@ const $ = (id) => document.getElementById(id);
 const dropEl = $("drop"), fileEl = $("file"), panelEl = $("panel");
 const rowsEl = $("rows"), submitEl = $("submit"), clearEl = $("clear");
 const gateEl = $("gate"), footEl = $("foot");
+const summaryEl = $("summary"), summaryRowsEl = $("summaryRows");
 
 let PROTOCOLS = [];       // [{pid,name,alias}] for the dropdowns
 let UNITS = [];           // current submission units (server views)
 const SLURP = {};         // file_id -> slurp_id (after submit)
 let polling = null;
+let summaryEmailed = false;   // guard: send the batch summary email at most once
 
 function foot(msg){ footEl.textContent = msg; }
 
@@ -105,6 +107,21 @@ function updateGate(){
              : `${notReady} of ${UNITS.length} row(s) need a protocol`;
 }
 
+// per-compound rollup table (compound ids are shown here — local browser only)
+async function renderSummary(){
+  const r = await fetch("/api/summary");
+  const {compounds} = await r.json();
+  summaryRowsEl.innerHTML = "";
+  for (const c of compounds){
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"); a.className = "rows"; a.textContent = c.batch_id;
+    const d = document.createElement("td"); d.className = "rows"; d.textContent = c.run_date || "";
+    const b = document.createElement("td"); b.textContent = c.assays.join(", ");
+    tr.appendChild(a); tr.appendChild(d); tr.appendChild(b); summaryRowsEl.appendChild(tr);
+  }
+  summaryEl.classList.toggle("show", compounds.length > 0);
+}
+
 // ---- backend calls ------------------------------------------------------
 
 async function upload(fileList){
@@ -117,6 +134,7 @@ async function upload(fileList){
   UNITS = UNITS.concat(data.units || []);
   panelEl.classList.add("show");
   render();
+  renderSummary();
   foot(`${UNITS.length} submission unit(s)`);
 }
 
@@ -129,10 +147,12 @@ async function recheck(fid, pid){
   const i = UNITS.findIndex(x => x.file_id === fid);
   if (i >= 0) UNITS[i] = u;
   render();
+  renderSummary();
 }
 
 async function submit(){
   if (submitEl.disabled) return;
+  summaryEmailed = false;
   const units = UNITS.map(u => ({file_id: u.file_id}));
   foot("submitting to CDD…");
   submitEl.disabled = true; submitEl.classList.remove("ready");
@@ -191,10 +211,23 @@ function startPolling(){
       if (TERMINAL.has(st.state)) done++;
     }
     foot(`progress: ${done}/${statuses.length} finished`);
-    if (done >= statuses.length){ clearInterval(polling); polling = null; foot("done"); }
+    if (done >= statuses.length){ clearInterval(polling); polling = null; foot("done"); emailSummary(); }
   };
   tick();
   polling = setInterval(tick, 4000);
+}
+
+// send the per-compound summary to the team once the batch finishes (at most once)
+async function emailSummary(){
+  if (summaryEmailed) return;
+  summaryEmailed = true;
+  try {
+    const r = await fetch("/api/email-summary", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+    const d = await r.json();
+    foot(d.sent ? `done · summary emailed (${d.compounds} compounds)`
+                : "done · summary email not sent (see server log)");
+  } catch (e) { foot("done · summary email failed"); }
 }
 
 // ---- wiring -------------------------------------------------------------
@@ -217,6 +250,8 @@ submitEl.addEventListener("click", submit);
 clearEl.addEventListener("click", () => {
   UNITS = []; for (const k in SLURP) delete SLURP[k];
   if (polling){ clearInterval(polling); polling = null; }
+  summaryEmailed = false;
+  summaryEl.classList.remove("show"); summaryRowsEl.innerHTML = "";
   panelEl.classList.remove("show"); rowsEl.innerHTML = ""; foot("idle");
 });
 

@@ -9,11 +9,25 @@
 
 vault: 7108
 
+# Optional metadata-only email on a successful import (see python/notify.py).
+# Body carries counts/ids/names only — never SMILES/compound ids/row values.
+# The SMTP password is NOT here: it lives in `password_file` (chmod 600), like
+# ~/.cdd_token. Verify SMTP works with: import_to_protocol.py --test-notification
+notifications:
+  enabled: true
+  on_commit: true              # email when a slurp reaches "committed"
+  recipient: gtamo@seracbio.com
+  sender: gtamo@seracbio.com
+  smtp_host: smtp.office365.com
+  smtp_port: 587
+  password_file: ~/.MS_pwd.txt
+
 protocols:
 
   131399:
     name: MDR1-MDCK II Inhibitor
     alias: mdck                        # short name for get_protocol_data --experiments
+    label: MDCK-MDR1 II (with and without inh)   # short display name for the per-compound summary
     # CDD project the data belongs to (the "Project" dropdown in the web UI).
     project: FBXO31
     # Saved mapping-template name (web UI "Templates" tab). Encodes the parser
@@ -67,6 +81,7 @@ protocols:
   85979:
     name: LogD
     alias: logd
+    label: LogD
     project: FBXO31
     mapping_template: "LogD_GT"    # rebuilt 2026-07-07 from the new WuXi layout
     identifiers:
@@ -84,6 +99,7 @@ protocols:
   86015:
     name: Thermodynamic Solubility
     alias: solubility
+    label: therm sol 6.4
     project: FBXO31
     mapping_template: "TSY_GT"    # rebuilt 2026-07-07 from the new WuXi layout
     identifiers:
@@ -103,6 +119,7 @@ protocols:
   125963:
     name: Plasma protein binding (UC)
     alias: ppb
+    label: mouse ppb
     project: FBXO31
     mapping_template: "PPB_GT"    # rebuilt 2026-07-07 from the new WuXi layout
     identifiers:
@@ -131,6 +148,7 @@ protocols:
   88861:
     name: Microsomal stability species human
     alias: hlm
+    label: HLM
     project: FBXO31
     mapping_template: "HLM_GT"    # rebuilt 2026-07-09 from the new WuXi layout
     # Species value (in the file's Species column) that routes to this protocol.
@@ -156,6 +174,7 @@ protocols:
   88862:
     name: Microsomal stability species mouse
     alias: mlm
+    label: MLM
     project: FBXO31
     mapping_template: "MLM_GT"    # rebuilt 2026-07-09 from the new WuXi layout
     species: Mouse

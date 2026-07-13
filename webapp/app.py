@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 import convert_upload as cu
 import detect_protocol as dp
 import import_to_protocol as itp
+import notify
 from get_library import API_BASE, make_session  # noqa: F401  (API_BASE via itp)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -124,12 +125,51 @@ def _stage_unit(fid, parent, species, header, rows, pid, candidates=None):
     cu.write_csv(csv_path, h2, r2)
     res = itp.evaluate_mapping(h2, block, missing_id_rows=0)
     ready = res["ok"] and bool(block.get("mapping_template")) and len(r2) > 0
-    e.update(csv_path=str(csv_path), header=h2, name=block.get("name"),
+    e.update(csv_path=str(csv_path), header=h2, conv_rows=r2, name=block.get("name"),
              project=block.get("project"), mapping_template=block.get("mapping_template"),
              mapping_ok=res["ok"], unmapped=res["unmapped"], missing=res["missing"],
              kept=len(r2), dropped=dropped, renames=renames,
              status="ready" if ready else "needs-selection")
     return _unit_view(fid)
+
+
+def _summary_rows():
+    """Per-compound rollup across staged units: batch id -> the assay labels it
+    appears in, both in first-seen order.
+
+    Returns [{"batch_id": ..., "assays": [label, ...]}, ...]. Extracts ONLY the
+    identifier (batch id) column + each unit's label — never readout values. By
+    design this carries compound batch ids (shown in the local browser and, per
+    explicit owner authorization, the team email); it deliberately stops short of
+    the measured values.
+    """
+    order, assays, dates = [], {}, {}
+    for e in STAGE.values():
+        pid, header, rows = e.get("pid"), e.get("header"), e.get("conv_rows")
+        if not (pid and header and rows):
+            continue
+        block = _block(pid) or {}
+        label = block.get("label") or block.get("name") or f"PID {pid}"
+        hdr_norm = [cu._norm(h) for h in header]
+        idents = list((block.get("identifiers") or {}).values())
+        idx = next((hdr_norm.index(cu._norm(n)) for n in idents if cu._norm(n) in hdr_norm), None)
+        if idx is None:
+            continue
+        date_idx = next((i for i, h in enumerate(hdr_norm) if h.lower() in ("date", "run date")), None)
+        for r in rows:
+            bid = str(r[idx]).strip() if idx < len(r) and r[idx] is not None else ""
+            if not bid:
+                continue
+            if bid not in assays:
+                assays[bid], dates[bid] = [], []
+                order.append(bid)
+            if label not in assays[bid]:
+                assays[bid].append(label)
+            if date_idx is not None and date_idx < len(r):
+                dv = str(r[date_idx]).strip()
+                if dv and dv not in dates[bid]:
+                    dates[bid].append(dv)
+    return [{"batch_id": b, "run_date": ", ".join(dates[b]), "assays": assays[b]} for b in order]
 
 
 # ---------- app ----------
@@ -222,15 +262,33 @@ def status(ids: str = ""):
     """Poll one or more slurp ids; return state + committed/total counts."""
     session = _session()
     out = []
-    for sid in [s for s in ids.split(",") if s.strip()]:
-        obj = itp.slurp_status(session, VAULT, int(sid))
+    for sid in [int(s) for s in ids.split(",") if s.strip()]:
+        obj = itp.slurp_status(session, VAULT, sid)
         out.append({
-            "slurp_id": int(sid),
+            "slurp_id": sid,
             "state": obj.get("state", "unknown"),
             "records_committed": obj.get("records_committed"),
             "total_records": obj.get("total_records"),
         })
     return {"statuses": out}
+
+
+@app.get("/api/summary")
+def summary():
+    """Per-compound → assays rollup for the staged batch. NOTE: unlike the other
+    endpoints, this intentionally returns compound batch ids to the LOCAL browser
+    (localhost) — the per-compound view the operator asked for."""
+    return {"compounds": _summary_rows()}
+
+
+@app.post("/api/email-summary")
+def email_summary(payload: dict = Body(...)):
+    """Email the per-compound summary table to the configured recipient. The body
+    carries compound batch ids by explicit owner authorization (see wiki)."""
+    rows = _summary_rows()
+    sent = notify.notify_compound_summary(
+        CONFIG, rows, subject=payload.get("subject") or "[CDD] upload summary")
+    return {"sent": bool(sent), "compounds": len(rows)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
