@@ -33,11 +33,14 @@ from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import check_cdd_commit as ccc
 import convert_upload as cu
 import detect_protocol as dp
 import import_to_protocol as itp
 import notify
 from get_library import API_BASE, make_session  # noqa: F401  (API_BASE via itp)
+
+VERIFY_TOL, VERIFY_REL = 0.01, 0.01  # value tolerances for the commit check
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
@@ -279,6 +282,27 @@ def summary():
     endpoints, this intentionally returns compound batch ids to the LOCAL browser
     (localhost) — the per-compound view the operator asked for."""
     return {"compounds": _summary_rows()}
+
+
+@app.post("/api/verify")
+def verify(payload: dict = Body(...)):
+    """Verify committed units against CDD (existence + numeric values). Returns
+    per-unit ok + counts and an overall `success` (drives the azure SUCCESS
+    button). Counts only — no compound ids/values cross to the browser."""
+    session = _session()
+    lookups, results = {}, []
+    for fid, e in STAGE.items():
+        pid = e.get("pid")
+        if not pid or not e.get("conv_rows"):
+            continue
+        if pid not in lookups:
+            lookups[pid] = ccc.cdd_lookup(session, VAULT, pid)
+        res = ccc.check_unit({"header": e["header"], "rows": e["conv_rows"]},
+                             lookups[pid], _block(pid), VERIFY_TOL, VERIFY_REL)
+        results.append({"file_id": fid, "ok": not res["missing"] and not res["mismatch"],
+                        "checked": res["checked"], "matched": res["matched"],
+                        "missing": len(res["missing"]), "mismatch": len(res["mismatch"])})
+    return {"results": results, "success": bool(results) and all(r["ok"] for r in results)}
 
 
 @app.post("/api/email-summary")

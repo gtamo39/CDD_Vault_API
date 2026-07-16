@@ -13,6 +13,7 @@ let UNITS = [];           // current submission units (server views)
 const SLURP = {};         // file_id -> slurp_id (after submit)
 let polling = null;
 let summaryEmailed = false;   // guard: send the batch summary email at most once
+let verified = false;         // guard: run the CDD verification at most once
 
 function foot(msg){ footEl.textContent = msg; }
 
@@ -152,7 +153,7 @@ async function recheck(fid, pid){
 
 async function submit(){
   if (submitEl.disabled) return;
-  summaryEmailed = false;
+  summaryEmailed = false; verified = false;
   const units = UNITS.map(u => ({file_id: u.file_id}));
   foot("submitting to CDD…");
   submitEl.disabled = true; submitEl.classList.remove("ready");
@@ -211,10 +212,35 @@ function startPolling(){
       if (TERMINAL.has(st.state)) done++;
     }
     foot(`progress: ${done}/${statuses.length} finished`);
-    if (done >= statuses.length){ clearInterval(polling); polling = null; foot("done"); emailSummary(); }
+    if (done >= statuses.length){
+      clearInterval(polling); polling = null; foot("done");
+      verifyBatch(); emailSummary();
+    }
   };
   tick();
   polling = setInterval(tick, 4000);
+}
+
+// verify committed data against CDD; flip rows + the button to azure SUCCESS
+async function verifyBatch(){
+  if (verified) return;
+  verified = true;
+  foot("verifying against CDD…");
+  try {
+    const r = await fetch("/api/verify", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+    const {results, success} = await r.json();
+    for (const res of results){
+      const tr = rowsEl.querySelector(`tr[data-fid="${res.file_id}"]`);
+      const tag = tr && tr.querySelector(".tag");
+      if (!tag) continue;
+      tag.className = "tag " + (res.ok ? "azure" : "err");
+      tag.textContent = res.ok ? "SUCCESS"
+        : `verify failed (${res.mismatch} mismatch · ${res.missing} missing)`;
+    }
+    if (success){ submitEl.textContent = "SUCCESS"; submitEl.classList.add("success"); }
+    foot(success ? "verified · SUCCESS" : "verified · mismatches (see rows)");
+  } catch (e) { foot("verify failed to run"); }
 }
 
 // send the per-compound summary to the team once the batch finishes (at most once)
@@ -250,7 +276,8 @@ submitEl.addEventListener("click", submit);
 clearEl.addEventListener("click", () => {
   UNITS = []; for (const k in SLURP) delete SLURP[k];
   if (polling){ clearInterval(polling); polling = null; }
-  summaryEmailed = false;
+  summaryEmailed = false; verified = false;
+  submitEl.textContent = "Submit to CDD"; submitEl.classList.remove("success");
   summaryEl.classList.remove("show"); summaryRowsEl.innerHTML = "";
   panelEl.classList.remove("show"); rowsEl.innerHTML = ""; foot("idle");
 });

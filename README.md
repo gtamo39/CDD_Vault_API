@@ -167,7 +167,9 @@ the same pipeline: drop WuXi `.xlsx` workbooks, it reads each **Upload** tab,
 auto-detects the protocol from the columns (change it via a dropdown), splits
 microsomal files by species, and — once every row is confirmed (the **Submit**
 button turns from grey to green) — submits the batch to CDD and tracks each run's
-progress.
+progress. When every run commits, it **verifies the committed data against the
+source files** (see below): each row flips to **SUCCESS** and the button turns
+**azure** if CDD's values match, or shows a mismatch otherwise.
 
 ```bash
 cdd/bin/python webapp/app.py     # from the repo root; then open http://127.0.0.1:8000
@@ -184,6 +186,26 @@ same table is emailed as the team notification (compound batch ids included — 
 deliberate, owner-authorized exception to the local-only policy; ids + assay
 names only, never the measured values). Requires the `notifications:` transport
 (see above) to actually send.
+
+## Verify a committed import matches the source files
+
+After uploading, confirm CDD actually holds what you sent — no manual spot-checking.
+[python/check_cdd_commit.py](python/check_cdd_commit.py) reads each source workbook,
+figures out its protocol (same detection + species split as the webapp), fetches
+that protocol's data back from CDD, and checks — per compound — that a committed
+row exists **and** its numeric readout values match (existence + values).
+
+```bash
+python3 python/check_cdd_commit.py data/uploads/20260716/*.xlsx
+```
+
+Exits `0` = SUCCESS (every compound and value matched), `1` = failure. Stdout is
+metadata only — per-unit `checked / matched / missing / mismatch` counts; any
+per-compound mismatch detail is written to a local `<file>.verify.txt` next to the
+input (never printed). Value matching tolerates rounding (`--tol` absolute, `--rel`
+relative), reconstructs CDD's `<`/`>` qualifiers, and matches against **any** run
+for a compound (so prior runs don't cause false mismatches). The webapp calls the
+same logic automatically after commit (the azure **SUCCESS** state).
 
 ## Extract protocol (assay) data
 
@@ -221,6 +243,7 @@ walks through it step by step.
 | [python/download_cdd_structures.py](python/download_cdd_structures.py) | Fetch compound structure PNGs for a saved search — see [docs/download_cdd_structures.md](docs/download_cdd_structures.md) |
 | [python/import_to_protocol.py](python/import_to_protocol.py) | Bulk-import a data file into a CDD protocol (Slurps API); `--list-protocols` finds the PID — see [docs/import_to_protocol.md](docs/import_to_protocol.md) |
 | [python/get_protocol_data.py](python/get_protocol_data.py) | Extract protocol assay data + SMILES into one wide table (latest per compound); pick assays by alias (`--experiments logd,ppb`) — see [docs/get_protocol_data.md](docs/get_protocol_data.md) |
+| [python/check_cdd_commit.py](python/check_cdd_commit.py) | Verify committed CDD data matches the source WuXi files (existence + numeric values); SUCCESS/failure exit code, per-compound detail to a local `.verify.txt` |
 | [python/split_species.py](python/split_species.py) | Split an `_upl.csv` into one CSV per species (e.g. MMS → `_Human_upl.csv` / `_Mouse_upl.csv`); Python port of the ADME HTML tool's species split |
 | [python/convert_upload.py](python/convert_upload.py) | Turn a raw WuXi `.xlsx` **Upload** tab into CDD-ready rows (qualifiers, ISO dates, blank-id drop, MDR1 identifier rename, species split) |
 | [python/detect_protocol.py](python/detect_protocol.py) | Guess a file's CDD protocol from its column signature (config-driven) |

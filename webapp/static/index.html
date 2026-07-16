@@ -12,6 +12,7 @@
     --paper:#f4f1ea; --card:#fffdf7; --ink:#2b2723; --muted:#6f675c; --line:#e3ddd0;
     --terracotta:#b4471f; --terracotta-soft:#e9d4c8;
     --olive:#6b7233; --olive-soft:#e6e7d4;
+    --azure:#2f7bb5; --azure-soft:#dbe9f4;
     --display:"Fraunces",Georgia,serif; --body:"Newsreader",Georgia,serif;
     --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
   }
@@ -50,6 +51,7 @@
   .tag.ok{background:var(--olive-soft);color:var(--olive)}
   .tag.err{background:var(--terracotta-soft);color:var(--terracotta)}
   .tag.wait{background:#eee8db;color:var(--muted)}
+  .tag.azure{background:var(--azure-soft);color:var(--azure)}
   .sub{display:block;color:var(--muted);font-size:11px;margin-top:5px;text-transform:none;letter-spacing:0}
   .sub a{color:var(--terracotta)}
 
@@ -59,6 +61,8 @@
   .btn.submit{background:#cdc7ba;color:#fff;cursor:default}
   .btn.submit.ready{background:var(--olive);color:#fff;cursor:pointer}
   .btn.submit.ready:hover{filter:brightness(1.06)}
+  /* azure once CDD verification confirms the committed data matches the files */
+  .btn.submit.success{background:var(--azure);color:#fff;cursor:default}
   .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);cursor:pointer}
   .gate{font-family:var(--mono);font-size:12px;color:var(--muted)}
   .note{margin-top:26px;font-size:14.5px;color:var(--muted);border-left:3px solid var(--olive-soft);padding:2px 0 2px 14px}
