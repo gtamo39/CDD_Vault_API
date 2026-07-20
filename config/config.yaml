@@ -16,11 +16,11 @@ vault: 7108
 notifications:
   enabled: true
   on_commit: true              # email when a slurp reaches "committed"
-  recipient: gtamo@seracbio.com
-  sender: gtamo@seracbio.com
+  recipient: gtamo@seracbio.com    # who receives the notification
+  sender: auto@seracbio.com        # dedicated service mailbox (SMTP AUTH enabled)
   smtp_host: smtp.office365.com
   smtp_port: 587
-  password_file: ~/.MS_pwd.txt
+  password_file: ~/.auto_smtp      # holds auto@seracbio.com's password (chmod 600)
 
 protocols:
 
