@@ -171,6 +171,12 @@ progress. When every run commits, it **verifies the committed data against the
 source files** (see below): each row flips to **SUCCESS** and the button turns
 **azure** if CDD's values match, or shows a mismatch otherwise.
 
+At staging (before the ready flag), each unit is also checked against CDD for a
+**duplicate**: if every compound already exists there with matching values, the
+row shows an orange **already uploaded** flag instead of green **ready**, and is
+skipped on submit — so you can't upload the same data twice. (Best-effort: needs
+a token; if CDD can't be reached the row just shows **ready** as before.)
+
 ```bash
 cdd/bin/python webapp/app.py     # from the repo root; then open http://127.0.0.1:8000
 ```

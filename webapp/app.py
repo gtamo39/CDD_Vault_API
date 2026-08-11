@@ -108,8 +108,27 @@ def _unit_view(fid):
     }
 
 
-def _stage_unit(fid, parent, species, header, rows, pid, candidates=None):
-    """Convert (if a pid is known) + evaluate + store a submission unit."""
+def _already_uploaded(header, rows, pid, lookups):
+    """Best-effort duplicate check: True if EVERY compound in this unit already
+    exists in CDD with matching numeric values. Returns False if it can't check
+    (no token / network error / no rows) so staging never breaks on it."""
+    if not rows or not TOKEN_FILE.exists():
+        return False
+    try:
+        if pid not in lookups:
+            lookups[pid] = ccc.cdd_lookup(_session(), VAULT, pid)
+        res = ccc.check_unit({"header": header, "rows": rows}, lookups[pid],
+                             _block(pid), VERIFY_TOL, VERIFY_REL)
+        return res["checked"] > 0 and not res["missing"] and not res["mismatch"]
+    except Exception as ex:  # no token / network / etc. — fall back to normal ready
+        print(f"WARN: duplicate check skipped (pid {pid}): {ex}")
+        return False
+
+
+def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookups=None):
+    """Convert (if a pid is known) + evaluate + store a submission unit. Before
+    flagging a unit `ready`, check CDD for an existing identical upload and flag
+    it `already-uploaded` instead (to avoid submitting the same data twice)."""
     e = STAGE.setdefault(fid, {})
     e.update(parent=parent, species=species, raw_header=header, raw_rows=rows,
              pid=pid, candidates=candidates or [])
@@ -128,11 +147,13 @@ def _stage_unit(fid, parent, species, header, rows, pid, candidates=None):
     cu.write_csv(csv_path, h2, r2)
     res = itp.evaluate_mapping(h2, block, missing_id_rows=0)
     ready = res["ok"] and bool(block.get("mapping_template")) and len(r2) > 0
+    status = "ready" if ready else "needs-selection"
+    if ready and _already_uploaded(h2, r2, pid, lookups if lookups is not None else {}):
+        status = "already-uploaded"
     e.update(csv_path=str(csv_path), header=h2, conv_rows=r2, name=block.get("name"),
              project=block.get("project"), mapping_template=block.get("mapping_template"),
              mapping_ok=res["ok"], unmapped=res["unmapped"], missing=res["missing"],
-             kept=len(r2), dropped=dropped, renames=renames,
-             status="ready" if ready else "needs-selection")
+             kept=len(r2), dropped=dropped, renames=renames, status=status)
     return _unit_view(fid)
 
 
@@ -194,6 +215,7 @@ def protocols():
 async def upload(files: list[UploadFile] = File(...)):
     """Accept one or more .xlsx; return a flat list of submission units."""
     units = []
+    lookups = {}   # pid -> CDD data, fetched once per request for the dup check
     for uf in files:
         raw = STAGE_DIR / f"raw_{uuid.uuid4().hex}.xlsx"
         raw.write_bytes(await uf.read())
@@ -216,13 +238,13 @@ async def upload(files: list[UploadFile] = File(...)):
                 pid = det["species_pids"].get(species) or det["species_pids"].get(
                     species.title()) or det["species_pids"].get(species.capitalize())
                 units.append(_stage_unit(uuid.uuid4().hex, uf.filename, species,
-                                         header, srows, pid, cands))
+                                         header, srows, pid, cands, lookups=lookups))
         elif det["status"] == "single":
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
-                                     header, rows, det["pid"], cands))
+                                     header, rows, det["pid"], cands, lookups=lookups))
         else:  # unknown / ambiguous — user must pick from the dropdown
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
-                                     header, rows, None, cands))
+                                     header, rows, None, cands, lookups=lookups))
     return {"units": units}
 
 
@@ -235,7 +257,7 @@ def recheck(payload: dict = Body(...)):
         raise HTTPException(404, "unknown file_id")
     return _stage_unit(fid, e["parent"], e.get("species"),
                        e["raw_header"], e["raw_rows"], int(pid) if pid else None,
-                       e.get("candidates"))
+                       e.get("candidates"), lookups={})
 
 
 @app.post("/api/submit")

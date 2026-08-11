@@ -47,6 +47,8 @@ function statusCell(u){
     tag.dataset.progress = "1";
   } else if (u.status === "ready"){
     tag.className = "tag ok"; tag.textContent = "ready";
+  } else if (u.status === "already-uploaded"){
+    tag.className = "tag amber"; tag.textContent = "already uploaded";
   } else if (u.status === "error"){
     tag.className = "tag err"; tag.textContent = "error";
   } else {
@@ -55,6 +57,7 @@ function statusCell(u){
   td.appendChild(tag);
 
   const notes = [];
+  if (u.status === "already-uploaded") notes.push("identical data already in CDD — will be skipped");
   if (u.status === "error") notes.push(u.protocol_name || "no Upload tab");
   if (u.unmapped && u.unmapped.length) notes.push("unmapped: " + u.unmapped.join(", "));
   if (u.missing && u.missing.length) notes.push("missing: " + u.missing.join(", "));
@@ -94,18 +97,26 @@ function render(){
 }
 
 function updateGate(){
-  const submitted = Object.keys(SLURP).length > 0;
-  const allReady = UNITS.length > 0 && UNITS.every(u => u.status === "ready");
-  if (submitted){
+  if (Object.keys(SLURP).length > 0){   // already submitted
     submitEl.classList.remove("ready"); submitEl.disabled = true;
     gateEl.textContent = ""; return;
   }
-  submitEl.classList.toggle("ready", allReady);
-  submitEl.disabled = !allReady;
-  const notReady = UNITS.filter(u => u.status !== "ready").length;
-  gateEl.textContent = UNITS.length === 0 ? "" :
-    allReady ? `${UNITS.length} row(s) confirmed — ready to submit`
-             : `${notReady} of ${UNITS.length} row(s) need a protocol`;
+  const resolved = u => u.status === "ready" || u.status === "already-uploaded";
+  const allResolved = UNITS.length > 0 && UNITS.every(resolved);
+  const readyN = UNITS.filter(u => u.status === "ready").length;
+  const dupN = UNITS.filter(u => u.status === "already-uploaded").length;
+  const canSubmit = allResolved && readyN > 0;
+  submitEl.classList.toggle("ready", canSubmit);
+  submitEl.disabled = !canSubmit;
+  if (UNITS.length === 0){ gateEl.textContent = ""; return; }
+  if (!allResolved){
+    gateEl.textContent = `${UNITS.filter(u => !resolved(u)).length} of ${UNITS.length} row(s) need a protocol`;
+  } else if (readyN === 0){
+    gateEl.textContent = `all ${dupN} row(s) already uploaded — nothing to submit`;
+  } else {
+    gateEl.textContent = `${readyN} row(s) ready to submit`
+      + (dupN ? ` · ${dupN} already uploaded (skipped)` : "");
+  }
 }
 
 // per-compound rollup table (compound ids are shown here — local browser only)
@@ -154,7 +165,8 @@ async function recheck(fid, pid){
 async function submit(){
   if (submitEl.disabled) return;
   summaryEmailed = false; verified = false;
-  const units = UNITS.map(u => ({file_id: u.file_id}));
+  // only submit ready units; 'already-uploaded' rows are skipped (no re-upload)
+  const units = UNITS.filter(u => u.status === "ready").map(u => ({file_id: u.file_id}));
   foot("submitting to CDD…");
   submitEl.disabled = true; submitEl.classList.remove("ready");
   const r = await fetch("/api/submit", {
