@@ -75,6 +75,19 @@
   .summary.show{display:block}
   .subhead{font-family:var(--display);font-weight:600;font-size:20px;margin:0 0 4px}
   .subhead + .subnote{font-size:13px;color:var(--muted);margin:0 0 12px}
+  tr.diff td{background:var(--terracotta-soft)}
+  tr.diff td:last-child{color:var(--terracotta);font-weight:500}
+  /* double rule separating one compound's rows from the next in the comparison */
+  tr.group td{border-top:3px double var(--muted)}
+  td.ok-val{color:var(--olive);font-weight:500}
+  /* keep the wide rollup/comparison tables inside the card: fixed columns + wrap */
+  .summary table.units{table-layout:fixed}
+  .summary table.units th, .summary table.units td{overflow-wrap:anywhere;white-space:normal}
+  #summary th:nth-child(1){width:15%} #summary th:nth-child(2){width:19%}
+  #summary th:nth-child(3){width:38%} #summary th:nth-child(4){width:28%}
+  #compare th:nth-child(1){width:19%} #compare th:nth-child(2){width:21%}
+  #compare th:nth-child(3){width:24%} #compare th:nth-child(4){width:24%}
+  #compare th:nth-child(5){width:12%}
 </style>
 </head>
 <body>
@@ -106,8 +119,17 @@
         <h2 class="subhead">Compounds in this batch</h2>
         <p class="subnote">One row per compound, listing every assay it appears in across the dropped files.</p>
         <table class="units">
-          <thead><tr><th>Compound</th><th>Run date</th><th>Assays</th></tr></thead>
+          <thead><tr><th>Compound</th><th>Run date</th><th>Study number</th><th>Assays</th></tr></thead>
           <tbody id="summaryRows"></tbody>
+        </table>
+      </div>
+
+      <div class="summary" id="compare">
+        <h2 class="subhead">CDD vs file comparison</h2>
+        <p class="subnote">For compounds already in CDD: each field&rsquo;s CDD value beside the WuXi file value. <b>DIFF</b> flags a value that doesn&rsquo;t match.</p>
+        <table class="units">
+          <thead><tr><th>Compound</th><th>Field</th><th>CDD value</th><th>File value</th><th></th></tr></thead>
+          <tbody id="compareRows"></tbody>
         </table>
       </div>
     </div>
@@ -117,6 +139,6 @@
 
   <footer id="foot">idle</footer>
 </div>
-<script src="/static/app.js?v=2026-08-11"></script>
+<script src="/static/app.js?v=2026-08-28-4"></script>
 </body>
 </html>

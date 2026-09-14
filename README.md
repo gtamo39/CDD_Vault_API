@@ -213,6 +213,16 @@ relative), reconstructs CDD's `<`/`>` qualifiers, and matches against **any** ru
 for a compound (so prior runs don't cause false mismatches). The webapp calls the
 same logic automatically after commit (the azure **SUCCESS** state).
 
+Add `--compare` to also write a local `<file>.compare.csv` for a **side-by-side**
+of the overlap — for every compound already in CDD, one row per field
+(`batch_id, cdd_compound_name, experiment, cdd_value, wuxi_value, match`) with
+CDD's value next to the WuXi file's, covering the compound name, study number,
+study date, and each experiment (e.g. `LogD7.4`):
+
+```bash
+python3 python/check_cdd_commit.py --compare data/uploads/20260811/*.xlsx
+```
+
 ## Extract protocol (assay) data
 
 Pull each protocol's readout data back out of CDD, joined with molecule SMILES,

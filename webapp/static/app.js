@@ -7,6 +7,7 @@ const dropEl = $("drop"), fileEl = $("file"), panelEl = $("panel");
 const rowsEl = $("rows"), submitEl = $("submit"), clearEl = $("clear");
 const gateEl = $("gate"), footEl = $("foot");
 const summaryEl = $("summary"), summaryRowsEl = $("summaryRows");
+const compareEl = $("compare"), compareRowsEl = $("compareRows");
 
 let PROTOCOLS = [];       // [{pid,name,alias}] for the dropdowns
 let UNITS = [];           // current submission units (server views)
@@ -128,10 +129,36 @@ async function renderSummary(){
     const tr = document.createElement("tr");
     const a = document.createElement("td"); a.className = "rows"; a.textContent = c.batch_id;
     const d = document.createElement("td"); d.className = "rows"; d.textContent = c.run_date || "";
+    const s = document.createElement("td"); s.className = "rows"; s.textContent = c.study_number || "";
     const b = document.createElement("td"); b.textContent = c.assays.join(", ");
-    tr.appendChild(a); tr.appendChild(d); tr.appendChild(b); summaryRowsEl.appendChild(tr);
+    tr.appendChild(a); tr.appendChild(d); tr.appendChild(s); tr.appendChild(b);
+    summaryRowsEl.appendChild(tr);
   }
   summaryEl.classList.toggle("show", compounds.length > 0);
+}
+
+// CDD-vs-file value comparison for compounds already in CDD (local browser only)
+async function renderCompare(){
+  const r = await fetch("/api/compare");
+  const {rows} = await r.json();
+  compareRowsEl.innerHTML = "";
+  let prevBatch = null;
+  for (const x of rows){
+    const tr = document.createElement("tr");
+    if (x.match === "DIFF") tr.classList.add("diff");
+    if (prevBatch !== null && x.batch_id !== prevBatch) tr.classList.add("group");
+    prevBatch = x.batch_id;
+    const cells = [x.batch_id, x.experiment, x.cdd_value, x.wuxi_value, x.match];
+    cells.forEach((val, i) => {
+      const td = document.createElement("td");
+      if (i !== 1) td.className = "rows";
+      if (i === 4 && val === "ok") td.className = "ok-val";   // green match
+      td.textContent = val;
+      tr.appendChild(td);
+    });
+    compareRowsEl.appendChild(tr);
+  }
+  compareEl.classList.toggle("show", rows.length > 0);
 }
 
 // ---- backend calls ------------------------------------------------------
@@ -147,6 +174,7 @@ async function upload(fileList){
   panelEl.classList.add("show");
   render();
   renderSummary();
+  renderCompare();
   foot(`${UNITS.length} submission unit(s)`);
 }
 
@@ -160,6 +188,7 @@ async function recheck(fid, pid){
   if (i >= 0) UNITS[i] = u;
   render();
   renderSummary();
+  renderCompare();
 }
 
 async function submit(){
@@ -291,7 +320,11 @@ clearEl.addEventListener("click", () => {
   summaryEmailed = false; verified = false;
   submitEl.textContent = "Submit to CDD"; submitEl.classList.remove("success");
   summaryEl.classList.remove("show"); summaryRowsEl.innerHTML = "";
-  panelEl.classList.remove("show"); rowsEl.innerHTML = ""; foot("idle");
+  compareEl.classList.remove("show"); compareRowsEl.innerHTML = "";
+  panelEl.classList.remove("show"); rowsEl.innerHTML = "";
+  fetch("/api/clear", {method:"POST"});   // drop server-side staged units too
+  foot("idle");
 });
 
-loadProtocols().then(() => foot("ready"));
+// fresh page: clear any server-side STAGE left from a prior tab, then load protocols
+fetch("/api/clear", {method:"POST"}).finally(() => loadProtocols().then(() => foot("ready")));

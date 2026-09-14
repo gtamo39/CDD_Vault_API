@@ -38,7 +38,8 @@ import convert_upload as cu
 import detect_protocol as dp
 from get_library import make_session, load_token
 from get_protocol_data import (
-    API_BASE, _paginate, get_with_retry, load_config, protocol_rows, run_dates,
+    API_BASE, _paginate, get_with_retry, load_config,
+    protocol_rows, readout_names, run_dates,
 )
 
 _NUM = re.compile(r"^\s*([<>]=?)?\s*(-?\d+(?:\.\d+)?)\s*$")
@@ -72,6 +73,32 @@ def compare_value(file_val, cdd_val, tol, rel):
     if fp[0] != cp[0]:
         return False
     return abs(fp[1] - cp[1]) <= max(tol, abs(fp[1]) * rel)
+
+
+_DATE_COLS = ("study date", "date", "run date")
+# free-text columns hidden from the CDD-vs-file comparison view
+_IGNORE_COMPARE_COLS = ("provider comment", "provider name", "comment", "serac comment")
+
+
+def _digits(v):
+    """Digits only, so a date matches regardless of format (2026-03-30 == 20260330)."""
+    return re.sub(r"\D", "", str(v)) if v is not None else ""
+
+
+def compare_field(col_norm_lower, file_val, cdd_val, tol, rel):
+    """Verdict for one readout, respecting the field's kind:
+      * study number  -> EXACT string (the run identity; a different study is NOT
+                         a duplicate). Skip (None) only when the file value is blank.
+      * a date column -> EXACT (digits-only) — never a numeric tolerance.
+      * otherwise      -> numeric compare_value (measurements, with tolerance).
+    """
+    if col_norm_lower == "study number":
+        f = str(file_val).strip() if file_val is not None else ""
+        return None if not f else f == (str(cdd_val).strip() if cdd_val is not None else "")
+    if col_norm_lower in _DATE_COLS:
+        f = _digits(file_val)
+        return None if not f else f == _digits(cdd_val)
+    return compare_value(file_val, cdd_val, tol, rel)
 
 
 # ---------- CDD read ----------
@@ -114,6 +141,70 @@ def cdd_lookup(session, vault, pid, page_size=1000):
             continue
         ro = r.get("readouts") or {}
         out.setdefault(mbid, []).append({str(rid): cell_value(c) for rid, c in ro.items()})
+    return out
+
+
+def build_comparison(session, vault, pid, page_size=1000):
+    """For --compare mode. Returns (runs_by, name_by, rnames):
+      runs_by  {mbid -> [ {str(rid): value}, ... ]}   ALL runs (same shape as cdd_lookup)
+      name_by  {mbid -> CDD molecule name (SRB-XXXXXXX)}
+      rnames   {rid -> readout name}   (for the 'experiment' label, e.g. LogD7.4)
+    """
+    rows = protocol_rows(session, vault, pid, page_size=page_size)
+    bmap = {}  # numeric batch id -> (molecule_batch_identifier, cdd molecule name)
+    ids = sorted({r["batch"] for r in rows if r.get("batch") is not None})
+    for i in range(0, len(ids), 200):
+        for o in _paginate(session, f"{API_BASE}/vaults/{vault}/batches",
+                           params={"batches": ",".join(map(str, ids[i:i + 200]))}, page_size=200):
+            if o.get("id") is not None:
+                mol = o.get("molecule")
+                name = mol.get("name") if isinstance(mol, dict) else None
+                bmap[o["id"]] = (o.get("molecule_batch_identifier"), name)
+    runs_by, name_by = {}, {}
+    for r in rows:
+        mbid, name = bmap.get(r.get("batch"), (None, None))
+        if not mbid:
+            continue
+        ro = r.get("readouts") or {}
+        runs_by.setdefault(mbid, []).append({str(rid): cell_value(c) for rid, c in ro.items()})
+        name_by[mbid] = name
+    return runs_by, name_by, readout_names(session, vault, pid)
+
+
+def comparison_rows(unit, runs_by, name_by, rnames, block, tol, rel):
+    """Per readout, a row [batch_id, cdd_name, experiment, cdd_value, wuxi_value, match]
+    for every file compound that EXISTS in CDD (best-matching run). For side-by-side
+    comparison of the overlap — carries values, so callers write it to a local file."""
+    header, rows = unit["header"], unit["rows"]
+    hdr_norm = [cu._norm(h) for h in header]
+    idents = list((block.get("identifiers") or {}).values())
+    id_idx = next((hdr_norm.index(cu._norm(n)) for n in idents if cu._norm(n) in hdr_norm), None)
+    readouts = block.get("readouts") or {}
+    col_idx = {col: (rid, hdr_norm.index(cu._norm(col)))
+               for col, rid in readouts.items() if cu._norm(col) in hdr_norm}
+    out = []
+    if id_idx is None:
+        return out
+    for r in rows:
+        mbid = str(r[id_idx]).strip() if id_idx < len(r) and r[id_idx] is not None else ""
+        runs = runs_by.get(mbid)
+        if not mbid or not runs:
+            continue  # only compounds already in CDD
+        best, best_n = runs[0], None
+        for rv in runs:
+            n = sum(1 for col, (rid, j) in col_idx.items()
+                    if j < len(r) and compare_field(cu._norm(col).lower(), r[j], rv.get(str(rid)), tol, rel) is False)
+            if best_n is None or n < best_n:
+                best, best_n = rv, n
+        for col, (rid, j) in col_idx.items():
+            if cu._norm(col).lower() in _IGNORE_COMPARE_COLS:
+                continue  # free-text columns aren't useful in the overlap view
+            fv = r[j] if j < len(r) else ""
+            cv = best.get(str(rid))
+            verdict = compare_field(cu._norm(col).lower(), fv, cv, tol, rel)
+            out.append([mbid, name_by.get(mbid) or "", rnames.get(rid) or col,
+                        "" if cv is None else cv, "" if fv is None else fv,
+                        "ok" if verdict is True else ("DIFF" if verdict is False else "")])
     return out
 
 
@@ -189,7 +280,7 @@ def check_unit(unit, lookup, block, tol, rel):
                 j = col_idx.get(col)
                 if j is None or j >= len(r):
                     continue
-                if compare_value(r[j], run_vals.get(str(rid)), tol, rel) is False:
+                if compare_field(cu._norm(col).lower(), r[j], run_vals.get(str(rid)), tol, rel) is False:
                     fails.append({"batch_id": mbid, "column": col,
                                   "file": r[j], "cdd": run_vals.get(str(rid))})
             if not fails:
@@ -205,14 +296,19 @@ def check_unit(unit, lookup, block, tol, rel):
 
 
 def verify(paths, vault=7108, token_file="~/.cdd_token", config_path="config/config.yaml",
-           force_pid=None, tol=0.01, rel=0.01, write_report=True, verbose=True):
-    """Verify each file against CDD. Returns (success, per_file_results)."""
+           force_pid=None, tol=0.01, rel=0.01, write_report=True, compare=False, verbose=True):
+    """Verify each file against CDD. Returns (success, per_file_results).
+
+    compare=True also writes a local `<file>.compare.csv` — for every compound
+    already in CDD, CDD's values (compound name, study number/date, each
+    experiment) side by side with the WuXi file row.
+    """
     config = load_config(config_path)
     session = make_session(load_token(token_file))
-    lookups = {}
+    lookups, detail = {}, {}
     overall, out = True, []
     for path in paths:
-        units, file_ok, report = [], True, []
+        units, file_ok, report, comp = [], True, [], []
         for u in load_units(path, config, force_pid=force_pid):
             pid = u.get("pid")
             if not pid:
@@ -222,7 +318,11 @@ def verify(paths, vault=7108, token_file="~/.cdd_token", config_path="config/con
                     print(f"  [{u.get('species') or '-'}] no protocol detected -> FAIL")
                 continue
             if pid not in lookups:
-                lookups[pid] = cdd_lookup(session, vault, pid)
+                if compare:  # build_comparison returns the same run shape cdd_lookup needs
+                    runs_by, name_by, rnames = build_comparison(session, vault, pid)
+                    lookups[pid], detail[pid] = runs_by, (name_by, rnames)
+                else:
+                    lookups[pid] = cdd_lookup(session, vault, pid)
             block = (config.get("protocols") or {}).get(pid) or {}
             res = check_unit(u, lookups[pid], block, tol, rel)
             ok = not res["missing"] and not res["mismatch"]
@@ -236,7 +336,19 @@ def verify(paths, vault=7108, token_file="~/.cdd_token", config_path="config/con
                       f"mismatch={len(res['mismatch'])} -> {'PASS' if ok else 'FAIL'}")
             if not ok:
                 report.append((pid, u.get("species"), res))
+            if compare:
+                name_by, rnames = detail[pid]
+                comp += comparison_rows(u, lookups[pid], name_by, rnames, block, tol, rel)
         overall = overall and file_ok
+        if compare and comp:
+            cp = Path(path).with_suffix(Path(path).suffix + ".compare.csv")
+            with open(cp, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow(["batch_id", "cdd_compound_name", "experiment", "cdd_value",
+                            "wuxi_value", "match"])
+                w.writerows(comp)
+            if verbose:
+                print(f"  comparison -> {cp} ({len(comp)} field rows; local, has values)")
         if write_report and report:
             rp = Path(path).with_suffix(Path(path).suffix + ".verify.txt")
             with open(rp, "w", encoding="utf-8") as fh:
@@ -271,11 +383,16 @@ def main():
     ap.add_argument("--tol", type=float, default=0.01, help="Absolute value tolerance.")
     ap.add_argument("--rel", type=float, default=0.01, help="Relative value tolerance.")
     ap.add_argument("--no-report", action="store_true", help="Don't write .verify.txt files.")
+    ap.add_argument("--compare", action="store_true",
+                    help="Also write a local <file>.compare.csv: for each compound already "
+                         "in CDD, CDD's compound name / study number / study date / each "
+                         "experiment side by side with the WuXi file row.")
     args = ap.parse_args()
 
     ok, _ = verify(args.files, vault=args.vault, token_file=args.token_file,
                    config_path=args.config, force_pid=args.protocol,
-                   tol=args.tol, rel=args.rel, write_report=not args.no_report)
+                   tol=args.tol, rel=args.rel, write_report=not args.no_report,
+                   compare=args.compare)
     sys.exit(0 if ok else 1)
 
 

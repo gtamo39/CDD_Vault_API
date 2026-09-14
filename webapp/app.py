@@ -158,16 +158,14 @@ def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookup
 
 
 def _summary_rows():
-    """Per-compound rollup across staged units: batch id -> the assay labels it
-    appears in, both in first-seen order.
+    """Per-compound rollup across staged units, first-seen order. Each row:
+      batch_id, run_date, study_number, assays[list]
 
-    Returns [{"batch_id": ..., "assays": [label, ...]}, ...]. Extracts ONLY the
-    identifier (batch id) column + each unit's label — never readout values. By
-    design this carries compound batch ids (shown in the local browser and, per
-    explicit owner authorization, the team email); it deliberately stops short of
-    the measured values.
+    Metadata only — no measured values (the email renderers use batch_id/run_date/
+    assays; study_number is browser-only). The CDD-vs-file value comparison lives
+    in /api/compare, not here.
     """
-    order, assays, dates = [], {}, {}
+    order, per = [], {}
     for e in STAGE.values():
         pid, header, rows = e.get("pid"), e.get("header"), e.get("conv_rows")
         if not (pid and header and rows):
@@ -180,20 +178,28 @@ def _summary_rows():
         if idx is None:
             continue
         date_idx = next((i for i, h in enumerate(hdr_norm) if h.lower() in ("date", "run date")), None)
+        study_idx = next((i for i, h in enumerate(hdr_norm) if h.lower() == "study number"), None)
         for r in rows:
             bid = str(r[idx]).strip() if idx < len(r) and r[idx] is not None else ""
             if not bid:
                 continue
-            if bid not in assays:
-                assays[bid], dates[bid] = [], []
+            d = per.get(bid)
+            if d is None:
+                d = per[bid] = {"assays": [], "dates": [], "studies": []}
                 order.append(bid)
-            if label not in assays[bid]:
-                assays[bid].append(label)
+            if label not in d["assays"]:
+                d["assays"].append(label)
             if date_idx is not None and date_idx < len(r):
                 dv = str(r[date_idx]).strip()
-                if dv and dv not in dates[bid]:
-                    dates[bid].append(dv)
-    return [{"batch_id": b, "run_date": ", ".join(dates[b]), "assays": assays[b]} for b in order]
+                if dv and dv not in d["dates"]:
+                    d["dates"].append(dv)
+            if study_idx is not None and study_idx < len(r):
+                sv = str(r[study_idx]).strip()
+                if sv and sv not in d["studies"]:
+                    d["studies"].append(sv)
+    return [{"batch_id": b, "run_date": ", ".join(per[b]["dates"]),
+             "study_number": ", ".join(per[b]["studies"]), "assays": per[b]["assays"]}
+            for b in order]
 
 
 # ---------- app ----------
@@ -304,6 +310,46 @@ def summary():
     endpoints, this intentionally returns compound batch ids to the LOCAL browser
     (localhost) — the per-compound view the operator asked for."""
     return {"compounds": _summary_rows()}
+
+
+@app.get("/api/compare")
+def compare():
+    """CDD-vs-file value comparison for staged compounds already in CDD. Returns
+    long-format rows (batch_id, cdd_compound_name, experiment, cdd_value,
+    wuxi_value, match) — the same data as `check_cdd_commit --compare`, for the
+    LOCAL browser only (carries CDD + file values; never emailed). Best-effort:
+    empty list if no token / nothing overlaps."""
+    if not TOKEN_FILE.exists():
+        return {"rows": [], "note": "no CDD token — comparison unavailable"}
+    session, detail, out = _session(), {}, []
+    for e in STAGE.values():
+        pid = e.get("pid")
+        if not pid or not e.get("conv_rows"):
+            continue
+        try:
+            if pid not in detail:
+                detail[pid] = ccc.build_comparison(session, VAULT, pid)
+            runs_by, name_by, rnames = detail[pid]
+            rows = ccc.comparison_rows({"header": e["header"], "rows": e["conv_rows"]},
+                                       runs_by, name_by, rnames, _block(pid),
+                                       VERIFY_TOL, VERIFY_REL)
+        except Exception as ex:
+            print(f"WARN: comparison skipped (pid {pid}): {ex}")
+            continue
+        for batch_id, cdd_name, experiment, cdd_v, wuxi_v, match in rows:
+            out.append({"batch_id": batch_id, "cdd_compound_name": cdd_name,
+                        "experiment": experiment, "cdd_value": cdd_v,
+                        "wuxi_value": wuxi_v, "match": match})
+    return {"rows": out}
+
+
+@app.post("/api/clear")
+def clear():
+    """Drop all staged units server-side. Called on page load and on Clear so the
+    summary/compare/verify reflect only the current batch (STAGE is a global dict;
+    a browser refresh alone doesn't reset it)."""
+    STAGE.clear()
+    return {"cleared": True}
 
 
 @app.post("/api/verify")
