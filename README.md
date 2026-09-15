@@ -223,6 +223,28 @@ study date, and each experiment (e.g. `LogD7.4`):
 python3 python/check_cdd_commit.py --compare data/uploads/20260811/*.xlsx
 ```
 
+## Give WuXi a format checker
+
+[static/verify_file.html](static/verify_file.html) is a **standalone page you
+send to the CRO** (email the single file, or put it on a shared drive). They open it in any
+recent browser, drop a report on it, and it checks the workbook against our upload
+convention *before* they send it to us. It needs no install, no server, and no network — all
+checks run inside their browser, so no file or value ever leaves their machine.
+
+It reports, per file:
+
+| Check | Why it matters |
+|---|---|
+| A sheet named `Upload` exists | Without it the import app cannot read the report at all |
+| The identifier column is present | Must be one `Molecule-Batch ID` (`SRB-XXXXXXX-NNN`), never split `Compound ID` + `Batch No` |
+| Every endpoint column is present and spelled exactly right | The CDD mapping template matches on the literal column name |
+| Numeric result columns hold numbers only | CDD rejects a row with text (`NA`, `ND`) in a numeric field — the cell must be left empty |
+| No unexpected extra columns; key fields filled on every row | Warnings — these do not block, but usually signal a wrong template |
+
+The page also lists the full expected column set per assay, so WuXi can self-serve the spec.
+The conventions are copied from [config/config.yaml](config/config.yaml) — if you change a
+protocol's columns there, update the `PROTOCOLS` block in the HTML and re-send it.
+
 ## Extract protocol (assay) data
 
 Pull each protocol's readout data back out of CDD, joined with molecule SMILES,
@@ -264,6 +286,7 @@ walks through it step by step.
 | [python/convert_upload.py](python/convert_upload.py) | Turn a raw WuXi `.xlsx` **Upload** tab into CDD-ready rows (qualifiers, ISO dates, blank-id drop, MDR1 identifier rename, species split) |
 | [python/detect_protocol.py](python/detect_protocol.py) | Guess a file's CDD protocol from its column signature (config-driven) |
 | [webapp/](webapp/) | Local-only FastAPI drag-drop import app (`cdd/bin/python webapp/app.py`) — reuses the modules above |
+| [static/verify_file.html](static/verify_file.html) | **Send this to WuXi.** Standalone offline page: they drop a report and it checks the Upload tab against our convention before they send it |
 | [python/convert_dataset.py](python/convert_dataset.py) | `convert_to_target_format` — long→wide pivot for MDR1-style data |
 | [vignettes/](vignettes/) | Jupyter walkthroughs — `Sample_library_download.ipynb`, `convert_dataset.ipynb`, `sample_protocol_download.ipynb` |
 | [tests/](tests/) | `unittest` suite (run with `python -m unittest discover tests`) |

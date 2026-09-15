@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report format checker</title>
+<style>
+  :root{
+    --paper:#f4f1ea; --card:#fffdf7; --ink:#2b2723; --muted:#6f675c; --line:#e3ddd0;
+    --terracotta:#b4471f; --terracotta-soft:#f0dccf;
+    --olive:#6b7233; --olive-soft:#e6e7d4;
+    --azure:#2f7bb5; --azure-soft:#dbe9f4;
+    --amber:#c9791f; --amber-soft:#f6e4cc;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--body);
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    min-height:100vh;display:flex;justify-content:center;padding:44px 20px}
+  .wrap{width:100%;max-width:820px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--terracotta);margin:0 0 10px}
+  h1{font-weight:700;font-size:33px;line-height:1.1;letter-spacing:-.01em;margin:0 0 12px}
+  .lede{font-size:17px;color:var(--muted);margin:0 0 22px;max-width:64ch}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px;
+    box-shadow:0 1px 0 rgba(0,0,0,.02),0 16px 40px -30px rgba(43,39,35,.4)}
+  .drop{border:2px dashed var(--terracotta-soft);border-radius:12px;background:linear-gradient(180deg,#fffefb,#fffdf7);
+    padding:38px 22px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s,transform .05s}
+  .drop:hover{border-color:var(--terracotta)}
+  .drop.drag{border-color:var(--terracotta);background:#fbf2ec;transform:translateY(-1px)}
+  .drop .icon{font-size:30px;color:var(--terracotta);display:block;margin-bottom:6px}
+  .drop strong{font-weight:600}
+  .drop .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:9px;letter-spacing:.03em}
+  input[type=file]{display:none}
+  .privacy{margin:16px 0 0;font-size:13.5px;color:var(--muted);border-left:3px solid var(--olive-soft);padding:3px 0 3px 13px}
+  .privacy b{color:var(--olive);font-weight:600}
+
+  .results{margin-top:24px;display:flex;flex-direction:column;gap:16px}
+  .file{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card)}
+  .file .head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .file .name{font-family:var(--mono);font-size:13px;word-break:break-all;flex:1;color:var(--ink)}
+  .verdict{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    padding:5px 11px;border-radius:7px;white-space:nowrap}
+  .verdict.pass{background:var(--olive-soft);color:var(--olive)}
+  .verdict.warn{background:var(--amber-soft);color:var(--amber)}
+  .verdict.fail{background:var(--terracotta-soft);color:var(--terracotta)}
+  .checks{list-style:none;margin:0;padding:8px 18px 16px}
+  .checks li{display:flex;gap:11px;padding:8px 0;border-top:1px solid var(--line);align-items:baseline}
+  .checks li:first-child{border-top:none}
+  .mark{font-family:var(--mono);font-size:14px;line-height:1.4;flex:none;width:16px;text-align:center}
+  .s-pass .mark{color:var(--olive)} .s-warn .mark{color:var(--amber)}
+  .s-fail .mark{color:var(--terracotta)} .s-info .mark{color:var(--azure)}
+  .ctext{flex:1}
+  .clabel{font-size:14.5px}
+  .cdetail{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-top:3px;word-break:break-word}
+  .s-fail .cdetail{color:var(--terracotta)}
+
+  details.spec{margin-top:26px;border:1px solid var(--line);border-radius:12px;background:var(--card);padding:4px 18px}
+  details.spec summary{cursor:pointer;font-weight:600;padding:14px 0;font-size:16px;list-style:none}
+  details.spec summary::-webkit-details-marker{display:none}
+  details.spec summary::before{content:"▸ ";color:var(--terracotta)}
+  details.spec[open] summary::before{content:"▾ "}
+  .proto{padding:6px 0 16px;border-top:1px solid var(--line)}
+  .proto h3{margin:14px 0 4px;font-size:15px}
+  .proto .id{font-family:var(--mono);font-size:12.5px;color:var(--azure);margin:0 0 8px}
+  .cols{display:flex;flex-wrap:wrap;gap:6px;margin:0}
+  .col{font-family:var(--mono);font-size:12px;background:#efe9dc;color:var(--ink);padding:3px 8px;border-radius:6px}
+  .rules{margin:6px 0 0;padding-left:20px;font-size:14px;color:var(--muted)}
+  .rules li{margin:4px 0}
+  footer{margin-top:26px;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .err{color:var(--terracotta);font-family:var(--mono);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">WuXi data exchange</p>
+  <h1>Report format checker</h1>
+  <p class="lede">Drop a report workbook (<code>.xlsx</code>) below to check it against the agreed upload
+  convention <b>before you send it</b>. The tool reads the <b>&ldquo;Upload&rdquo;</b> tab, detects the assay from
+  its columns, and lists anything that does not match. Fix any red items, then re-check.</p>
+
+  <div class="card">
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose or drop Excel files">
+      <span class="icon">↑</span>
+      <strong>Drop .xlsx workbooks here</strong>
+      <div class="hint">or click to choose · you can check several at once</div>
+    </div>
+    <input type="file" id="file" multiple accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+    <p class="privacy"><b>Private &amp; offline.</b> Every check runs inside your own web browser.
+    No file, column, or value is uploaded or sent anywhere — you can run this with your network disconnected.</p>
+  </div>
+
+  <div class="results" id="results"></div>
+
+  <details class="spec">
+    <summary>The convention — required sheet, identifier, and columns per assay</summary>
+    <div class="proto">
+      <ul class="rules">
+        <li>Every report must contain a sheet named <b>Upload</b> (the tool matches it ignoring case and spaces).</li>
+        <li>The Upload tab must carry one identifier column with the compound batch id (<b>SRB-XXXXXXX-NNN</b>) — never split into separate <code>Compound ID</code> + <code>Batch No</code> columns.</li>
+        <li>Endpoint column names must match exactly (spelling, spacing, units, and the <code>- PgP inhibitor</code> suffixes are all significant).</li>
+        <li>Numeric result columns must contain <b>numbers only</b>. Never write <code>NA</code>, <code>ND</code>, or any other text — <b>leave the cell empty instead</b>. The import rejects a row that has text in a numeric field. A <code>&lt;</code> or <code>&gt;</code> qualifier (e.g. <code>&lt;0.5</code>) is fine.</li>
+        <li><code>Run Lab</code> and <code>Molecule Name</code> are allowed but ignored. Any other unexpected column is flagged.</li>
+      </ul>
+    </div>
+    <div id="specList"></div>
+  </details>
+
+  <footer id="foot">idle · nothing sent anywhere</footer>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   Core — identical logic to the repo's convert_upload/detect_protocol modules.
+   Only ever inspects column NAMES + blank counts; never echoes a data value.
+   ========================================================================== */
+const ID_UNPREFIXED = "Molecule-Batch ID";
+const ID_PREFIXED = "Batch Molecule-Batch ID";
+
+const PROTOCOLS = [
+  { key:"MDR1", name:"MDR1-MDCK II permeability (± PgP inhibitor)", identifier:ID_PREFIXED,
+    ignore:["Molecule Name","Run Lab"],
+    readouts:["Study number","Date","Cell line","Mean Papp A to B","Mean Papp B to A","Efflux ratio",
+      "Mean %Solution Recovery A to B","Mean %Solution Recovery B to A","Provider Comment","Serac Comment",
+      "Permeability Class","Pgp substrate","Provider Name","Study number - PgP inhibitor","Date - PgP inhibitor",
+      "Cell line - PgP inhibitor","Mean Papp A to B - PgP Inhibitor","Mean Papp B to A - PgP inhibitor",
+      "Efflux ratio - PgP inhibitor","Mean %Solution Recovery A to B - PgP inhibitor",
+      "Mean %Solution Recovery B to A - PgP inhibitor","Provider Comment - PgP inhibitor",
+      "Serac Comment - PgP inhibitor","Permeability Class - PgP inhibitor","Pgp substrate - Pgp inhibitor",
+      "Provider Name - PgP inhibitor"],
+    numeric:["Mean Papp A to B","Mean Papp B to A","Efflux ratio",
+      "Mean %Solution Recovery A to B","Mean %Solution Recovery B to A",
+      "Mean Papp A to B - PgP Inhibitor","Mean Papp B to A - PgP inhibitor","Efflux ratio - PgP inhibitor",
+      "Mean %Solution Recovery A to B - PgP inhibitor","Mean %Solution Recovery B to A - PgP inhibitor"] },
+  { key:"LogD", name:"LogD 7.4", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Study Date","LogD7.4 (Oct/buff) result","Provider Comment","Provider Name","Comment"],
+    numeric:["LogD7.4 (Oct/buff) result"] },
+  { key:"TSY", name:"Thermodynamic Solubility", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Date","Media","Thermodynamic Solubility (μg/mL)","Thermodynamic Solubility (μM)",
+      "Provider Comment","Provider Name","Comment"],
+    numeric:["Thermodynamic Solubility (μg/mL)","Thermodynamic Solubility (μM)"] },
+  { key:"PPB", name:"Plasma protein binding (UC)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Date","Species","%Unbound","%Bound","%Remaining","Provider Comment","Provider Name","Comment"],
+    numeric:["%Unbound","%Bound","%Remaining"] },
+  { key:"MMS", name:"Microsomal stability (Human + Mouse)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Date","species","T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)",
+      "Remaining (No co factor=60min)","Provider Comment","Comment","Provider Name"],
+    numeric:["T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)","Remaining (No co factor=60min)"] },
+];
+
+function unescapeOoxml(s){ return String(s).replace(/_x([0-9A-Fa-f]{4})_/g,(_,h)=>String.fromCharCode(parseInt(h,16))); }
+function norm(s){ if(s===null||s===undefined) return ""; return unescapeOoxml(s).replace(/﻿/g,"").split(/\s+/).filter(Boolean).join(" "); }
+
+function decodeEntities(s){
+  return s.replace(/&(#x?[0-9a-fA-F]+|amp|lt|gt|quot|apos);/g,(m,e)=>{
+    if(e==="amp") return "&"; if(e==="lt") return "<"; if(e==="gt") return ">";
+    if(e==="quot") return '"'; if(e==="apos") return "'";
+    if(e[0]==="#") return String.fromCodePoint(parseInt(e[1]==="x"?e.slice(2):e.slice(1), e[1]==="x"?16:10));
+    return m; });
+}
+function attr(tag,name){ const m=tag.match(new RegExp(name.replace(/[:.]/g,"\\$&")+'="([^"]*)"')); return m?decodeEntities(m[1]):null; }
+function tText(block){ let out="",m,re=/<t\b[^>]*>([\s\S]*?)<\/t>/g; while((m=re.exec(block))) out+=m[1]; return decodeEntities(out); }
+function colIndex(ref){ const m=/^([A-Z]+)/.exec(ref||""); if(!m) return -1; let n=0; for(const ch of m[1]) n=n*26+(ch.charCodeAt(0)-64); return n-1; }
+
+function parseSharedStrings(xml){ if(!xml) return []; const out=[],re=/<si\b[^>]*>([\s\S]*?)<\/si>/g; let m; while((m=re.exec(xml))) out.push(tText(m[1])); return out; }
+function parseWorkbookSheets(xml){ const out=[],re=/<sheet\b[^>]*\/?>/g; let m; while((m=re.exec(xml))) out.push({name:attr(m[0],"name"),rid:attr(m[0],"r:id")}); return out; }
+function parseRels(xml){ const map={},re=/<Relationship\b[^>]*>/g; let m; while((m=re.exec(xml))) map[attr(m[0],"Id")]=attr(m[0],"Target"); return map; }
+
+function parseSheet(xml, shared){
+  const rowsXml=[],re=/<row\b[^>]*>([\s\S]*?)<\/row>/g; let m;
+  while((m=re.exec(xml))) rowsXml.push(m[1]);
+  const cellsOf=(rowXml)=>{
+    const cells={},cre=/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g; let cm;
+    while((cm=cre.exec(rowXml))){
+      const tag=cm[1],body=cm[2]||"",i=colIndex(attr("<c "+tag+">","r")),t=attr("<c "+tag+">","t");
+      let val="";
+      if(t==="inlineStr") val=tText(body);
+      else{ const vm=/<v>([\s\S]*?)<\/v>/.exec(body); const raw=vm?decodeEntities(vm[1]):"";
+        val = t==="s" ? (shared[parseInt(raw,10)] ?? "") : raw; }
+      if(i>=0) cells[i]=val;
+    }
+    return cells;
+  };
+  let hIdx=-1, headerCells=null;
+  for(let r=0;r<rowsXml.length;r++){ const c=cellsOf(rowsXml[r]);
+    if(Object.values(c).some(v=>String(v).trim()!=="")){ hIdx=r; headerCells=c; break; } }
+  if(headerCells===null) return {header:[],rows:[]};
+  const keep=Object.keys(headerCells).map(Number).filter(i=>String(headerCells[i]).trim()!=="").sort((a,b)=>a-b);
+  const header=keep.map(i=>norm(headerCells[i]));
+  const rows=[];
+  for(let r=hIdx+1;r<rowsXml.length;r++){ const c=cellsOf(rowsXml[r]);
+    const row=keep.map(i=>(c[i]===undefined?"":String(c[i])));
+    if(row.every(v=>v.trim()==="")) continue; rows.push(row); }
+  return {header,rows};
+}
+
+/* minimal ZIP reader — xlsx is a zip; inflate injected per environment */
+function zipEntries(dv){
+  const u16=o=>dv.getUint16(o,true),u32=o=>dv.getUint32(o,true);
+  let eocd=-1; for(let i=dv.byteLength-22;i>=0;i--){ if(u32(i)===0x06054b50){ eocd=i; break; } }
+  if(eocd<0) throw new Error("not a .xlsx (zip) file");
+  let off=u32(eocd+16); const count=u16(eocd+10),entries={};
+  for(let n=0;n<count;n++){
+    if(u32(off)!==0x02014b50) break;
+    const method=u16(off+10),compSize=u32(off+20),fnLen=u16(off+28),exLen=u16(off+30),cmLen=u16(off+32),lho=u32(off+42);
+    const name=new TextDecoder().decode(new Uint8Array(dv.buffer,off+46,fnLen));
+    entries[name]={method,compSize,lho}; off+=46+fnLen+exLen+cmLen;
+  }
+  return entries;
+}
+async function readEntry(dv,e,inflate){
+  const u16=o=>dv.getUint16(o,true);
+  const fnLen=u16(e.lho+26),exLen=u16(e.lho+28),start=e.lho+30+fnLen+exLen;
+  const raw=new Uint8Array(dv.buffer,start,e.compSize);
+  const bytes=e.method===0?raw:await inflate(raw);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+async function readXlsx(buffer, inflate){
+  const dv=new DataView(buffer),entries=zipEntries(dv);
+  const get=name=>entries[name]?readEntry(dv,entries[name],inflate):Promise.resolve(null);
+  const sheets=parseWorkbookSheets(await get("xl/workbook.xml")||"");
+  const rels=parseRels(await get("xl/_rels/workbook.xml.rels")||"");
+  const sheetNames=sheets.map(s=>s.name);
+  const target=sheets.find(s=>(s.name||"").trim().toLowerCase()==="upload");
+  if(!target) return {sheetNames,upload:null};
+  let path=rels[target.rid]||""; path="xl/"+path.replace(/^\/?xl\//,"").replace(/^\//,"");
+  const shared=parseSharedStrings(await get("xl/sharedStrings.xml"));
+  return {sheetNames,upload:parseSheet(await get(path),shared)};
+}
+
+function scoreAll(header){
+  const hnorm=header.map(norm),hset=new Set(hnorm);
+  return PROTOCOLS.map(p=>{
+    const rnorm=p.readouts.map(norm);
+    const matched=rnorm.filter(r=>hset.has(r)).length;
+    const importable=new Set([...rnorm,norm(p.identifier)]);
+    const explained=hnorm.filter(h=>importable.has(h)).length;
+    const idPresent=hset.has(norm(p.identifier)) || (p.identifier===ID_PREFIXED && hset.has(norm(ID_UNPREFIXED)));
+    return {p,matched,total:rnorm.length,recall:matched/rnorm.length,precision:hnorm.length?explained/hnorm.length:0,idPresent};
+  }).sort((a,b)=>b.recall-a.recall||b.precision-a.precision);
+}
+const MIN_RECALL=0.6;
+/* a number, optionally carrying a < / > qualifier — anything else is text the import rejects */
+const NUMERIC_RE=/^[<>≤≥]?\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
+function idxOf(header,name){ const n=norm(name); return header.findIndex(h=>norm(h)===n); }
+function blankCount(rows,i){ return i<0?-1:rows.filter(r=>(r[i]??"").trim()==="").length; }
+/* distinct non-numeric tokens in a numeric column (e.g. "NA", "ND") */
+function textTokens(rows,i){
+  const bad=new Set();
+  for(const r of rows){ const v=(r[i]??"").trim(); if(v && !NUMERIC_RE.test(v)) bad.add(v); }
+  return [...bad];
+}
+
+function analyze(fileName, sheetNames, upload){
+  const checks=[]; const push=(label,status,detail="")=>checks.push({label,status,detail});
+  if(!upload){
+    push("Workbook contains an “Upload” sheet","fail","No sheet named “Upload”. Sheets found: "+sheetNames.join(", "));
+    return {fileName,verdict:"fail",protocol:null,checks};
+  }
+  push("Workbook contains an “Upload” sheet","pass");
+  const header=upload.header,rows=upload.rows;
+  const best=scoreAll(header)[0];
+  if(!best || best.recall<MIN_RECALL){
+    push("Columns match a known assay","fail",
+      best?`Closest is ${best.p.name} (only ${Math.round(best.recall*100)}% of its columns present).`:"No assay columns recognised.");
+    return {fileName,verdict:"fail",protocol:null,checks};
+  }
+  const p=best.p;
+  push("Detected assay","info",`${p.name} — ${Math.round(best.recall*100)}% of its columns present`);
+  push(`Identifier column “${p.identifier}” present`, best.idPresent?"pass":"fail",
+    best.idPresent?"":`Provide one “${ID_UNPREFIXED}” column (SRB-XXXXXXX-NNN). `+
+      ((idxOf(header,"Compound ID")>=0||idxOf(header,"Batch No")>=0)
+        ? "This file splits it into “Compound ID” + “Batch No” — merge them into a single “"+ID_UNPREFIXED+"”." : ""));
+  const hset=new Set(header.map(norm));
+  const missing=p.readouts.filter(r=>!hset.has(norm(r)));
+  push("All expected endpoint columns present", missing.length?"fail":"pass", missing.length?"Missing: "+missing.join(", "):"");
+  const allowed=new Set([...p.readouts.map(norm),norm(p.identifier),norm(ID_UNPREFIXED),...p.ignore.map(norm)]);
+  const extras=header.filter(h=>h && !allowed.has(norm(h)));
+  push("No unexpected extra columns", extras.length?"warn":"pass",
+    extras.length?"Not recognised (will be ignored or rejected): "+extras.join(", "):"");
+  const offenders=[];
+  for(const col of (p.numeric||[])){
+    const i=idxOf(header,col); if(i<0) continue;
+    const toks=textTokens(rows,i);
+    if(toks.length) offenders.push(`${col} (${toks.map(t=>`“${t}”`).join(", ")})`);
+  }
+  push("Numeric result columns hold numbers only", offenders.length?"fail":"pass",
+    offenders.length?"The import rejects these rows — leave the cell empty instead of writing text. Found in: "+offenders.join("; "):"");
+
+  for(const col of ["Study number","Date","Study Date", p.identifier===ID_PREFIXED?ID_PREFIXED:ID_UNPREFIXED]){
+    const i=idxOf(header,col); if(i<0) continue;
+    const b=blankCount(rows,i);
+    if(b>0) push(`“${col}” filled on every row`,"warn",`${b} of ${rows.length} rows are blank.`);
+  }
+  const verdict=checks.some(c=>c.status==="fail")?"fail":checks.some(c=>c.status==="warn")?"warn":"pass";
+  return {fileName,verdict,protocol:p.name,checks};
+}
+
+/* ============================================================================
+   Browser glue
+   ========================================================================== */
+async function inflate(raw){
+  const ds=new DecompressionStream("deflate-raw");
+  const stream=new Blob([raw]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+const MARK={pass:"✓",warn:"!",fail:"✗",info:"›"};
+const VERDICT={pass:"Matches convention",warn:"Matches — check notes",fail:"Needs fixes"};
+
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+function renderCard(res){
+  const li=res.checks.map(c=>
+    `<li class="s-${c.status}"><span class="mark">${MARK[c.status]}</span>
+      <span class="ctext"><span class="clabel">${esc(c.label)}</span>
+      ${c.detail?`<span class="cdetail">${esc(c.detail)}</span>`:""}</span></li>`).join("");
+  return `<div class="file"><div class="head">
+      <span class="name">${esc(res.fileName)}</span>
+      <span class="verdict ${res.verdict}">${VERDICT[res.verdict]}</span></div>
+    <ul class="checks">${li}</ul></div>`;
+}
+function renderError(name,msg){
+  return `<div class="file"><div class="head"><span class="name">${esc(name)}</span>
+    <span class="verdict fail">Unreadable</span></div>
+    <ul class="checks"><li class="s-fail"><span class="mark">✗</span>
+    <span class="ctext"><span class="clabel">Could not read this file</span>
+    <span class="cdetail err">${esc(msg)} — is it a real .xlsx workbook (not .xls / .csv)?</span></span></li></ul></div>`;
+}
+
+const results=document.getElementById("results");
+const foot=document.getElementById("foot");
+
+async function handleFiles(list){
+  const files=[...list].filter(f=>/\.xlsx$/i.test(f.name));
+  if(!files.length){ foot.textContent="drop .xlsx files"; return; }
+  results.innerHTML=""; foot.textContent=`checking ${files.length} file(s)…`;
+  let ok=0,bad=0;
+  for(const f of files){
+    let html;
+    try{
+      const {sheetNames,upload}=await readXlsx(await f.arrayBuffer(),inflate);
+      const res=analyze(f.name,sheetNames,upload);
+      res.verdict==="pass"?ok++:bad++; html=renderCard(res);
+    }catch(e){ bad++; html=renderError(f.name,e.message||String(e)); }
+    results.insertAdjacentHTML("beforeend",html);
+  }
+  foot.textContent=`${files.length} checked · ${ok} ok · ${bad} to review · nothing sent anywhere`;
+}
+
+/* drop zone + picker */
+const drop=document.getElementById("drop"),input=document.getElementById("file");
+drop.onclick=()=>input.click();
+drop.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); input.click(); } };
+input.onchange=()=>handleFiles(input.files);
+["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("drag");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("drag");}));
+drop.addEventListener("drop",e=>handleFiles(e.dataTransfer.files));
+
+/* reference spec */
+document.getElementById("specList").innerHTML=PROTOCOLS.map(p=>
+  `<div class="proto"><h3>${esc(p.name)}</h3>
+   <p class="id">identifier: ${esc(p.identifier)}</p>
+   <div class="cols">${p.readouts.map(c=>`<span class="col">${esc(c)}</span>`).join("")}</div></div>`).join("");
+
+if(typeof DecompressionStream==="undefined")
+  foot.textContent="this browser is too old (needs DecompressionStream) — use a recent Chrome/Edge/Firefox/Safari";
+</script>
+</body>
+</html>
