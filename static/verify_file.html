@@ -99,6 +99,7 @@
       <ul class="rules">
         <li>Every report must contain a sheet named <b>Upload</b> (the tool matches it ignoring case and spaces).</li>
         <li>The Upload tab must carry one identifier column with the compound batch id (<b>SRB-XXXXXXX-NNN</b>) — never split into separate <code>Compound ID</code> + <code>Batch No</code> columns.</li>
+        <li><b>Include the batch suffix.</b> <code>SRB-0013325</code> is a <i>molecule</i> id and will be rejected; the value must be the full batch id, e.g. <code>SRB-0013325-001</code>. Every record in the file fails without it.</li>
         <li>Endpoint column names must match exactly (spelling, spacing, units, and the <code>- PgP inhibitor</code> suffixes are all significant).</li>
         <li>Numeric result columns must contain <b>numbers only</b>. Never write <code>NA</code>, <code>ND</code>, or any other text — <b>leave the cell empty instead</b>. The import rejects a row that has text in a numeric field. A <code>&lt;</code> or <code>&gt;</code> qualifier (e.g. <code>&lt;0.5</code>) is fine.</li>
         <li><code>Run Lab</code> and <code>Molecule Name</code> are allowed but ignored. Any other unexpected column is flagged.</li>
@@ -244,6 +245,10 @@ function scoreAll(header){
 const MIN_RECALL=0.6;
 /* a number, optionally carrying a < / > qualifier — anything else is text the import rejects */
 const NUMERIC_RE=/^[<>≤≥]?\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
+/* a full compound-batch id: SRB-XXXXXXX-NNN. A bare molecule id (no -NNN) is the
+   single most common mistake and makes EVERY record in the file fail. */
+const BATCH_ID_RE=/^[A-Za-z]+-\d+-\d+$/;
+const MOLECULE_ONLY_RE=/^[A-Za-z]+-\d+$/;
 function idxOf(header,name){ const n=norm(name); return header.findIndex(h=>norm(h)===n); }
 function blankCount(rows,i){ return i<0?-1:rows.filter(r=>(r[i]??"").trim()==="").length; }
 /* distinct non-numeric tokens in a numeric column (e.g. "NA", "ND") */
@@ -273,6 +278,27 @@ function analyze(fileName, sheetNames, upload){
     best.idPresent?"":`Provide one “${ID_UNPREFIXED}” column (SRB-XXXXXXX-NNN). `+
       ((idxOf(header,"Compound ID")>=0||idxOf(header,"Batch No")>=0)
         ? "This file splits it into “Compound ID” + “Batch No” — merge them into a single “"+ID_UNPREFIXED+"”." : ""));
+  const idCol=idxOf(header, p.identifier)>=0 ? p.identifier : ID_UNPREFIXED;
+  const idi=idxOf(header, idCol);
+  if(idi>=0){
+    const vals=rows.map(r=>String(r[idi]??"").trim()).filter(Boolean);
+    const bare=[...new Set(vals.filter(v=>MOLECULE_ONLY_RE.test(v)))];
+    const other=[...new Set(vals.filter(v=>!BATCH_ID_RE.test(v) && !MOLECULE_ONLY_RE.test(v)))];
+    const blanks=rows.length-vals.length;
+    if(bare.length)
+      push(`Every “${idCol}” is a full batch id`,"fail",
+        `${bare.length} value(s) are a MOLECULE id with no batch suffix — add the trailing “-001” (e.g. `+
+        `${bare.slice(0,3).map(v=>`“${v}” should be “${v}-001”`).join(", ")}`+
+        `${bare.length>3?", …":""}). Every record will be rejected without it.`);
+    else if(other.length)
+      push(`Every “${idCol}” is a full batch id`,"fail",
+        `${other.length} value(s) are not in the SRB-XXXXXXX-NNN form: `+
+        other.slice(0,3).map(v=>`“${v}”`).join(", ")+(other.length>3?", …":""));
+    else
+      push(`Every “${idCol}” is a full batch id`,"pass",
+        blanks?`${blanks} row(s) have no identifier at all.`:"");
+  }
+
   const hset=new Set(header.map(norm));
   const missing=p.readouts.filter(r=>!hset.has(norm(r)));
   push("All expected endpoint columns present", missing.length?"fail":"pass", missing.length?"Missing: "+missing.join(", "):"");

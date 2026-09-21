@@ -20,7 +20,8 @@ What it does to the workbook's "Upload" tab (found case/space-insensitively):
   * reconcile the identifier column name to what the CDD template expects
     (MDR1's template wants 'Batch Molecule-Batch ID' while WuXi ships
     'Molecule-Batch ID'); config-driven, not hard-coded to a PID
-  * split by a 'Species' column into one unit per species (microsomal)
+  * normalise Species cells through a config alias map (FBS -> 10%FBS)
+  * apply the protocol's config `corrections:` (NA fills, decimal rounding)\n  * split by a 'Species' column into one unit per species (microsomal)
 """
 
 import csv
@@ -147,6 +148,55 @@ def drop_blank_identifier_rows(header, rows, block):
     return kept, dropped
 
 
+def species_key(s):
+    """Lookup key for a Species cell: case-folded and free of ALL spaces.
+
+    Dropping inner spaces makes '10% FBS' match '10%FBS' — the CDD protocol is
+    named with a space, so that spelling turns up in CRO files.
+    """
+    return _norm(s).lower().replace(" ", "")
+
+
+def species_alias_map(config):
+    """Build {species_key(raw cell value): canonical species} from the config.
+
+    Every protocol block's `species:` value maps to itself, so a file that writes
+    'mouse' routes exactly like 'Mouse'. The `species_aliases:` entries layer on
+    top for the short forms the CRO uses (e.g. 'FBS' -> '10%FBS').
+    """
+    out = {}
+    for block in (config.get("protocols") or {}).values():
+        species = (block or {}).get("species")
+        if species:
+            out[species_key(species)] = species
+    for raw, want in (config.get("species_aliases") or {}).items():
+        out[species_key(raw)] = want
+    return out
+
+
+def normalize_species(header, rows, aliases):
+    """Rewrite Species cells through an alias map (WuXi ships 'FBS' for '10%FBS').
+
+    `aliases` maps a raw cell value to the `species:` value the protocol blocks
+    route on; the match ignores case and outer spaces. Returns new rows, so the
+    caller's list stays untouched. Rows pass through unchanged when the file has
+    no Species column or the map is empty.
+    """
+    hdr_norm = [_norm(h).lower() for h in header]
+    if not aliases or SPECIES_HEADER not in hdr_norm:
+        return rows
+    sc = hdr_norm.index(SPECIES_HEADER)
+    amap = {species_key(k): v for k, v in aliases.items()}
+    out = []
+    for r in rows:
+        want = amap.get(species_key(r[sc])) if sc < len(r) else None
+        if want is not None and r[sc] != want:
+            r = list(r)
+            r[sc] = want
+        out.append(r)
+    return out
+
+
 def split_species(header, rows):
     """Split rows by a 'Species' column into [(species, rows), ...], first-seen order.
 
@@ -165,6 +215,70 @@ def split_species(header, rows):
             seen.add(sp)
             order.append(sp)
     return [(sp, [r for r in rows if species_of(r) == sp]) for sp in order]
+
+
+def _is_na(v):
+    """True for a cell the CRO left empty or marked as not-available."""
+    return v is None or str(v).strip().lower() in ("", "na", "n/a", "nan", "none", "nd", "n.d.")
+
+
+def _round_to(v, decimals):
+    """Round a number, or a '<'/'>'-qualified number, keeping the qualifier. Text passes through."""
+    if _is_na(v):
+        return v
+    m = re.fullmatch(r"\s*([<>]=?)?\s*(-?\d+(?:\.\d+)?)\s*", str(v))
+    if not m:
+        return v
+    num = round(float(m.group(2)), decimals)
+    text = f"{num:.{decimals}f}" if decimals > 0 else f"{int(num)}"
+    return f"{m.group(1)} {text}" if m.group(1) else float(text) if decimals else int(text)
+
+
+def apply_corrections(header, rows, block):
+    """Apply a protocol block's `corrections:` rules to a unit's rows.
+
+    Config shape (per protocol, all keys optional):
+        corrections:
+          fill_na:  {"%Unbound": 0, "%Bound": 100}    # empty/NA cell -> this value
+          round_to: {1: ["%Unbound", "%Bound"]}       # decimals -> columns
+
+    This is what makes a RAW CRO file import the same as a hand-corrected one, so
+    the rules live in config and never in a one-off script. Returns (new_rows,
+    summary) where summary counts what changed per column; the caller's rows are
+    left untouched. A column missing from the header is skipped silently.
+    """
+    rules = block.get("corrections") or {}
+    if not rules or not rows:
+        return rows, {}
+    hdr = {_norm(h): i for i, h in enumerate(header)}
+    idx = lambda col: hdr.get(_norm(col))
+    summary = {}
+    out = [list(r) for r in rows]
+    for col, fill in (rules.get("fill_na") or {}).items():
+        i = idx(col)
+        if i is None:
+            continue
+        n = 0
+        for r in out:
+            if i < len(r) and _is_na(r[i]):
+                r[i] = fill
+                n += 1
+        if n:
+            summary[f"{col}: NA->{fill}"] = n
+    for decimals, cols in (rules.get("round_to") or {}).items():
+        for col in cols or []:
+            i = idx(col)
+            if i is None:
+                continue
+            n = 0
+            for r in out:
+                if i < len(r):
+                    before = r[i]
+                    r[i] = _round_to(before, int(decimals))
+                    n += str(r[i]) != str(before)
+            if n:
+                summary[f"{col}: rounded to {decimals}dp"] = n
+    return out, summary
 
 
 def write_csv(path, header, rows):

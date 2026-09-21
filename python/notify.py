@@ -40,12 +40,82 @@ def _password(password_file):
     return p.read_text().strip() or None
 
 
+def _secret(path, default=None):
+    """Read a one-line secret from a chmod-600 file, or None if missing/empty."""
+    p = Path(path or default or "").expanduser()
+    if not str(p) or not p.exists():
+        return None
+    return p.read_text().strip() or None
+
+
+def _graph_token(n):
+    """OAuth2 client-credentials access token for Microsoft Graph, or None.
+
+    App-only flow: the app registration authenticates with its own secret, so no
+    user sign-in and no MFA prompt. This is what replaces SMTP basic auth, which
+    Microsoft disables by default on M365 tenants.
+    """
+    import requests
+
+    tenant, client = n.get("tenant_id"), n.get("client_id")
+    secret = _secret(n.get("client_secret_file"))
+    if not (tenant and client and secret):
+        print("WARN: Graph transport needs notifications.tenant_id, .client_id and "
+              f".client_secret_file (got tenant={bool(tenant)} client={bool(client)} "
+              f"secret={bool(secret)})")
+        return None
+    r = requests.post(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        data={"grant_type": "client_credentials", "client_id": client,
+              "client_secret": secret, "scope": "https://graph.microsoft.com/.default"},
+        timeout=30)
+    if not r.ok:
+        print(f"WARN: Graph token request failed ({r.status_code}): {r.text[:300]}")
+        return None
+    return r.json().get("access_token")
+
+
+def _send_graph(n, subject, body, html=None):
+    """Send via Microsoft Graph `sendMail` as the configured sender. True on success."""
+    import requests
+
+    recipient, sender = n.get("recipient"), n.get("sender")
+    if not (recipient and sender):
+        print("WARN: notifications enabled but recipient/sender missing")
+        return False
+    token = _graph_token(n)
+    if not token:
+        return False
+    # Graph carries ONE body part, so prefer the HTML rendering when we have it
+    content_type, content = ("HTML", html) if html else ("Text", body)
+    payload = {"message": {"subject": subject,
+                           "body": {"contentType": content_type, "content": content},
+                           "toRecipients": [{"emailAddress": {"address": a.strip()}}
+                                            for a in str(recipient).split(",") if a.strip()]},
+               "saveToSentItems": True}
+    try:
+        r = requests.post(f"https://graph.microsoft.com/v1.0/users/{sender}/sendMail",
+                          headers={"Authorization": f"Bearer {token}"},
+                          json=payload, timeout=30)
+        if r.status_code == 202:
+            return True
+        print(f"WARN: Graph sendMail failed ({r.status_code}): {r.text[:300]}")
+        return False
+    except Exception as ex:
+        print(f"WARN: Graph sendMail error ({type(ex).__name__}: {ex})")
+        return False
+
+
 def _send(n, subject, body, html=None):
     """Low-level send from a notifications block. Returns True on success.
 
-    When `html` is given, the message is multipart/alternative (plain `body`
-    plus the HTML part) so mail clients render the formatted table.
+    `transport: graph` uses Microsoft Graph with OAuth2 app-only auth (the
+    supported route since M365 disables SMTP basic auth by default); anything
+    else uses SMTP. When `html` is given SMTP sends multipart/alternative, while
+    Graph sends the HTML part alone.
     """
+    if str(n.get("transport", "smtp")).lower() == "graph":
+        return _send_graph(n, subject, body, html)
     recipient, sender = n.get("recipient"), n.get("sender")
     host, port = n.get("smtp_host", "smtp.office365.com"), int(n.get("smtp_port", 587))
     pw = _password(n.get("password_file"))

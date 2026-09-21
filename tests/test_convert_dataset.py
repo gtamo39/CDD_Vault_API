@@ -32,6 +32,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'python'))
 
+from convert_upload import (apply_corrections, normalize_species,
+                            species_alias_map, split_species)
 from convert_dataset import (
     check_columns_match,
     convert_to_target_format,
@@ -733,6 +735,323 @@ class ValidatePivotedOutputTests(unittest.TestCase):
         self.assertFalse(result)
         # specifically the uniqueness check fired
         self.assertIn('Unique', out)
+
+
+class NormalizeSpeciesTests(unittest.TestCase):
+    """convert_upload.normalize_species — map raw WuXi Species cells (e.g. 'FBS')
+    onto the `species:` value the protocol blocks route on (e.g. '10%FBS').
+    Synthetic ids only."""
+
+    HEADER = ['Molecule-Batch ID', 'Study number', 'species', '%Unbound']
+    ALIASES = {'FBS': '10%FBS'}
+
+    def _rows(self, *species):
+        return [['TEST-0000001-001', 'STU-1', sp, 1.0] for sp in species]
+
+    def test_renames_fbs(self):
+        """'FBS' becomes '10%FBS' so it routes to the 10% FBS protocol."""
+        out = normalize_species(self.HEADER, self._rows('FBS'), self.ALIASES)
+        # the species cell now carries the routing value
+        self.assertEqual(out[0][2], '10%FBS')
+
+    def test_match_ignores_case_and_spaces(self):
+        """' fbs ' still matches; WuXi spacing/case is not reliable."""
+        out = normalize_species(self.HEADER, self._rows(' fbs '), self.ALIASES)
+        # normalised despite the stray spaces and lower case
+        self.assertEqual(out[0][2], '10%FBS')
+
+    def test_leaves_other_species_alone(self):
+        """Mouse/Human/Rat are already correct and must not change."""
+        out = normalize_species(self.HEADER, self._rows('Mouse', 'Human', 'Rat'), self.ALIASES)
+        # every non-aliased species passes through untouched
+        self.assertEqual([r[2] for r in out], ['Mouse', 'Human', 'Rat'])
+
+    def test_already_correct_value_is_kept(self):
+        """A file that already says '10%FBS' stays '10%FBS'."""
+        out = normalize_species(self.HEADER, self._rows('10%FBS'), self.ALIASES)
+        # idempotent
+        self.assertEqual(out[0][2], '10%FBS')
+
+    def test_does_not_mutate_caller_rows(self):
+        """The caller's list must survive unchanged."""
+        rows = self._rows('FBS')
+        normalize_species(self.HEADER, rows, self.ALIASES)
+        # original row still holds the raw value
+        self.assertEqual(rows[0][2], 'FBS')
+
+    def test_no_species_column_is_a_no_op(self):
+        """A LogD file has no species column; rows return untouched."""
+        header = ['Molecule-Batch ID', 'Study number']
+        rows = [['TEST-0000001-001', 'STU-1']]
+        # same object back, nothing to do
+        self.assertIs(normalize_species(header, rows, self.ALIASES), rows)
+
+    def test_empty_alias_map_is_a_no_op(self):
+        """No `species_aliases:` in config must not break the import."""
+        rows = self._rows('FBS')
+        # returns the rows unchanged when the map is empty or None
+        self.assertIs(normalize_species(self.HEADER, rows, None), rows)
+
+    def test_split_routes_renamed_rows(self):
+        """After the rename, split_species yields a '10%FBS' unit, not 'FBS'."""
+        rows = normalize_species(self.HEADER, self._rows('FBS', 'Mouse'), self.ALIASES)
+        units = dict(split_species(self.HEADER, rows))
+        # the unit key now matches the config `species:` value
+        self.assertEqual(sorted(units), ['10%FBS', 'Mouse'])
+
+
+
+class SpeciesAliasMapTests(unittest.TestCase):
+    """convert_upload.species_alias_map — fold each protocol's own `species:` value
+    and the `species_aliases:` short forms into one lookup, so case differences and
+    CRO spellings collapse onto one canonical value per protocol."""
+
+    CONFIG = {
+        'protocols': {
+            125963: {'species': 'Mouse'},
+            135299: {'species': 'Human'},
+            135303: {'species': '10%FBS'},
+            85979: {},                      # no species (LogD) — must be skipped
+        },
+        'species_aliases': {'FBS': '10%FBS'},
+    }
+    HEADER = ['Molecule-Batch ID', 'species', '%Unbound']
+
+    def _rows(self, *species):
+        return [['TEST-0000001-001', sp, 1.0] for sp in species]
+
+    def test_own_species_values_are_canonical(self):
+        """Each block's `species:` maps to itself, keyed lowercase."""
+        m = species_alias_map(self.CONFIG)
+        # the config value is both the key (lowercased) and the canonical result
+        self.assertEqual(m['mouse'], 'Mouse')
+
+    def test_blocks_without_species_are_skipped(self):
+        """LogD has no `species:`, so it contributes no entry."""
+        m = species_alias_map(self.CONFIG)
+        # only the three species-bearing blocks plus the one alias
+        self.assertEqual(sorted(m), ['10%fbs', 'fbs', 'human', 'mouse'])
+
+    def test_alias_layers_on_top(self):
+        """`species_aliases:` adds the CRO short form."""
+        m = species_alias_map(self.CONFIG)
+        # FBS resolves to the canonical 10%FBS
+        self.assertEqual(m['fbs'], '10%FBS')
+
+    def test_lowercase_species_merges_with_canonical(self):
+        """A file writing both 'mouse' and 'Mouse' must yield ONE unit."""
+        rows = normalize_species(self.HEADER, self._rows('mouse', 'Mouse'),
+                                 species_alias_map(self.CONFIG))
+        # both spellings collapse to the canonical 'Mouse'
+        self.assertEqual([r[1] for r in rows], ['Mouse', 'Mouse'])
+
+    def test_fbs_and_10pct_fbs_merge_into_one_unit(self):
+        """'FBS' and '10%FBS' must land in a single split unit."""
+        rows = normalize_species(self.HEADER, self._rows('FBS', '10%FBS'),
+                                 species_alias_map(self.CONFIG))
+        units = dict(split_species(self.HEADER, rows))
+        # one key, holding both rows
+        self.assertEqual(list(units), ['10%FBS'])
+        self.assertEqual(len(units['10%FBS']), 2)
+
+    def test_inner_spaces_are_ignored(self):
+        """'10% FBS' (the CDD protocol's own spelling) must match '10%FBS'."""
+        rows = normalize_species(self.HEADER, self._rows('10% FBS', '10 % fbs'),
+                                 species_alias_map(self.CONFIG))
+        # inner spacing and case are both irrelevant to routing
+        self.assertEqual([r[1] for r in rows], ['10%FBS', '10%FBS'])
+
+    def test_unknown_species_passes_through(self):
+        """An unrecognised species is left alone, so it shows up for manual review."""
+        rows = normalize_species(self.HEADER, self._rows('Hamster'),
+                                 species_alias_map(self.CONFIG))
+        # untouched, rather than silently dropped or mis-routed
+        self.assertEqual(rows[0][1], 'Hamster')
+
+
+
+class ApplyCorrectionsTests(unittest.TestCase):
+    """convert_upload.apply_corrections — config-driven NA fills + decimal rounding, so a
+    RAW CRO file imports the same as a hand-corrected one. Synthetic ids only."""
+
+    BLOCK = {'corrections': {'fill_na': {'%Unbound': 0, '%Bound': 100},
+                             'round_to': {1: ['%Unbound', '%Bound', '%Remaining']}}}
+    HEADER = ['Molecule-Batch ID', '%Unbound', '%Bound', '%Remaining', 'Comment']
+
+    def _rows(self, *vals):
+        return [['TEST-0000001-001', *v] for v in vals]
+
+    def test_fills_na_unbound_with_zero(self):
+        """An empty %Unbound becomes 0, per config."""
+        out, _ = apply_corrections(self.HEADER, self._rows(['', 50.0, 90.0, '']), self.BLOCK)
+        # blank cell replaced by the configured fill
+        self.assertEqual(out[0][1], 0)
+
+    def test_fills_na_bound_with_hundred(self):
+        """A literal 'NA' in %Bound becomes 100."""
+        out, _ = apply_corrections(self.HEADER, self._rows([1.0, 'NA', 90.0, '']), self.BLOCK)
+        # 'NA' counts as not-available, not as text to keep
+        self.assertEqual(out[0][2], 100)
+
+    def test_rounds_to_one_decimal(self):
+        """Values are rounded to the configured number of decimals."""
+        out, _ = apply_corrections(self.HEADER, self._rows([1.2345, 98.7654, 95.4321, '']), self.BLOCK)
+        # all three configured columns rounded to 1 dp
+        self.assertEqual([out[0][1], out[0][2], out[0][3]], [1.2, 98.8, 95.4])
+
+    def test_keeps_qualifier_when_rounding(self):
+        """A '<'/'>' qualified value keeps its qualifier."""
+        out, _ = apply_corrections(self.HEADER, self._rows(['<0.567', 99.0, 90.0, '']), self.BLOCK)
+        # qualifier preserved, number rounded
+        self.assertEqual(out[0][1], '< 0.6')
+
+    def test_remaining_na_is_left_alone(self):
+        """%Remaining has no fill rule, so an NA stays NA (only rounding applies)."""
+        out, _ = apply_corrections(self.HEADER, self._rows([1.0, 99.0, 'NA', '']), self.BLOCK)
+        # not filled, because config lists no fill_na for %Remaining
+        self.assertEqual(out[0][3], 'NA')
+
+    def test_text_columns_untouched(self):
+        """Columns outside the rules are never modified."""
+        out, _ = apply_corrections(self.HEADER, self._rows([1.0, 99.0, 90.0, 'keep me']), self.BLOCK)
+        # the Comment column passes through verbatim
+        self.assertEqual(out[0][4], 'keep me')
+
+    def test_does_not_mutate_caller_rows(self):
+        """The caller's rows must survive unchanged."""
+        rows = self._rows(['', 50.0, 90.0, ''])
+        apply_corrections(self.HEADER, rows, self.BLOCK)
+        # original still blank
+        self.assertEqual(rows[0][1], '')
+
+    def test_no_corrections_block_is_a_no_op(self):
+        """A protocol without `corrections:` (e.g. LogD) is returned untouched."""
+        rows = self._rows(['', 50.0, 90.0, ''])
+        out, summary = apply_corrections(self.HEADER, rows, {})
+        # same object back, empty summary
+        self.assertIs(out, rows)
+        self.assertEqual(summary, {})
+
+    def test_missing_column_is_skipped(self):
+        """A rule naming a column the file lacks must not raise."""
+        header = ['Molecule-Batch ID', '%Unbound']
+        out, _ = apply_corrections(header, [['TEST-0000001-001', '']], self.BLOCK)
+        # %Bound/%Remaining absent -> skipped silently, %Unbound still filled
+        self.assertEqual(out[0][1], 0)
+
+    def test_summary_counts_what_changed(self):
+        """The summary reports per-column counts for logging."""
+        _, summary = apply_corrections(self.HEADER,
+                                       self._rows(['', 'NA', 1.234, ''], ['', 50.0, 2.0, '']),
+                                       self.BLOCK)
+        # two blank %Unbound cells were filled
+        self.assertEqual(summary.get('%Unbound: NA->0'), 2)
+
+
+
+class GraphNotificationTests(unittest.TestCase):
+    """notify._send_graph — Microsoft Graph app-only send. M365 disables SMTP basic
+    auth, so this is the supported transport. Fully stubbed: no network, no secrets."""
+
+    N = {'transport': 'graph', 'recipient': 'a@example.com', 'sender': 'auto@example.com',
+         'tenant_id': 'TENANT', 'client_id': 'CLIENT', 'client_secret_file': '/nonexistent'}
+
+    def _stub(self, token_ok=True, send_status=202):
+        """Fake `requests` capturing what would be sent."""
+        calls = {}
+        class R:
+            def __init__(s, ok, status, payload=None):
+                s.ok, s.status_code, s._p, s.text = ok, status, payload or {}, ''
+            def json(s): return s._p
+        class Fake:
+            @staticmethod
+            def post(url, data=None, headers=None, json=None, timeout=None):
+                calls.setdefault('urls', []).append(url)
+                if 'login.microsoftonline.com' in url:
+                    calls['token_data'] = data
+                    return R(token_ok, 200 if token_ok else 401, {'access_token': 'TOK'})
+                calls['headers'], calls['payload'] = headers, json
+                return R(send_status == 202, send_status)
+        return Fake, calls
+
+    def _run(self, subject='S', body='B', html=None, **kw):
+        import notify
+        fake, calls = self._stub(**kw)
+        real = sys.modules.get('requests')
+        sys.modules['requests'] = fake
+        notify._secret = lambda *a, **k: 'SECRET'          # stub the on-disk secret
+        try:
+            return notify._send_graph(self.N, subject, body, html), calls
+        finally:
+            if real is not None: sys.modules['requests'] = real
+            else: sys.modules.pop('requests', None)
+
+    def test_returns_true_on_202(self):
+        """Graph answers 202 Accepted on a successful sendMail."""
+        ok, _ = self._run()
+        # 202 is success for sendMail (no body returned)
+        self.assertTrue(ok)
+
+    def test_posts_to_the_sender_mailbox(self):
+        """The send URL addresses the configured sender mailbox."""
+        _, calls = self._run()
+        # app-only sends AS a named mailbox
+        self.assertIn('https://graph.microsoft.com/v1.0/users/auto@example.com/sendMail', calls['urls'])
+
+    def test_uses_client_credentials_grant(self):
+        """Token request is the app-only client-credentials flow, not a user login."""
+        _, calls = self._run()
+        # no user sign-in, hence no MFA prompt
+        self.assertEqual(calls['token_data']['grant_type'], 'client_credentials')
+        self.assertEqual(calls['token_data']['scope'], 'https://graph.microsoft.com/.default')
+
+    def test_sends_bearer_token(self):
+        """The access token is presented as a Bearer header."""
+        _, calls = self._run()
+        # token from the first call is reused on the send
+        self.assertEqual(calls['headers']['Authorization'], 'Bearer TOK')
+
+    def test_prefers_html_body(self):
+        """Graph carries one body part, so the HTML rendering wins when present."""
+        _, calls = self._run(html='<b>x</b>')
+        b = calls['payload']['message']['body']
+        # HTML chosen over the plain-text alternative
+        self.assertEqual(b['contentType'], 'HTML')
+        self.assertEqual(b['content'], '<b>x</b>')
+
+    def test_falls_back_to_text(self):
+        """Without HTML the plain body is sent as Text."""
+        _, calls = self._run()
+        # plain text when no HTML rendering was built
+        self.assertEqual(calls['payload']['message']['body']['contentType'], 'Text')
+
+    def test_splits_multiple_recipients(self):
+        """A comma-separated recipient list becomes several toRecipients entries."""
+        import notify
+        fake, calls = self._stub()
+        real = sys.modules.get('requests'); sys.modules['requests'] = fake
+        notify._secret = lambda *a, **k: 'SECRET'
+        try:
+            notify._send_graph({**self.N, 'recipient': 'a@x.com, b@x.com'}, 'S', 'B')
+        finally:
+            if real is not None: sys.modules['requests'] = real
+            else: sys.modules.pop('requests', None)
+        got = [r['emailAddress']['address'] for r in calls['payload']['message']['toRecipients']]
+        # both addresses, trimmed
+        self.assertEqual(got, ['a@x.com', 'b@x.com'])
+
+    def test_returns_false_on_send_error(self):
+        """A non-202 response fails softly — notifications never break an import."""
+        ok, _ = self._run(send_status=403)
+        # False, not an exception
+        self.assertFalse(ok)
+
+    def test_returns_false_when_token_fails(self):
+        """A rejected token request fails softly too."""
+        ok, _ = self._run(token_ok=False)
+        # e.g. admin consent not granted yet
+        self.assertFalse(ok)
+
 
 
 if __name__ == '__main__':

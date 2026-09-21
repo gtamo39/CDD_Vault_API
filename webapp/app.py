@@ -103,6 +103,7 @@ def _unit_view(fid):
         "mapping_ok": e.get("mapping_ok", False),
         "unmapped": e.get("unmapped", []),   # column names — schema, safe
         "missing": e.get("missing", []),     # column names — schema, safe
+        "unknown_batches": e.get("unknown_batches", []),   # batch ids absent from CDD
         "status": e.get("status", "needs-selection"),
         "candidates": e.get("candidates", []),
     }
@@ -125,7 +126,29 @@ def _already_uploaded(header, rows, pid, lookups):
         return False
 
 
-def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookups=None):
+def _unregistered_batches(header, rows, block, cache):
+    """Identifiers in this unit that are not registered as batches in CDD.
+
+    CDD rejects the whole file when a batch id is unknown (the usual cause is a
+    CRO sending the MOLECULE id without its '-NNN' batch suffix). Returns [] if
+    the check cannot run, so a token/network problem never blocks an upload.
+    """
+    if not rows or not TOKEN_FILE.exists():
+        return []
+    hdr_norm = [cu._norm(h) for h in header]
+    idents = list((block.get("identifiers") or {}).values())
+    i = next((hdr_norm.index(cu._norm(n)) for n in idents if cu._norm(n) in hdr_norm), None)
+    if i is None:
+        return []
+    try:
+        return ccc.missing_batches(_session(), VAULT,
+                                   {r[i] for r in rows if i < len(r)}, cache)
+    except Exception as ex:
+        print(f"WARN: batch-id check skipped: {ex}")
+        return []
+
+
+def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookups=None, batch_cache=None):
     """Convert (if a pid is known) + evaluate + store a submission unit. Before
     flagging a unit `ready`, check CDD for an existing identical upload and flag
     it `already-uploaded` instead (to avoid submitting the same data twice)."""
@@ -143,17 +166,20 @@ def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookup
         return _unit_view(fid)
     h2, renames = cu.reconcile_identifier(header, block)
     r2, dropped = cu.drop_blank_identifier_rows(h2, rows, block)
+    r2, corrections = cu.apply_corrections(h2, r2, block)
     csv_path = STAGE_DIR / f"{fid}.csv"
     cu.write_csv(csv_path, h2, r2)
     res = itp.evaluate_mapping(h2, block, missing_id_rows=0)
-    ready = res["ok"] and bool(block.get("mapping_template")) and len(r2) > 0
-    status = "ready" if ready else "needs-selection"
+    unknown = _unregistered_batches(h2, r2, block, batch_cache if batch_cache is not None else {})
+    ready = res["ok"] and bool(block.get("mapping_template")) and len(r2) > 0 and not unknown
+    status = "ready" if ready else ("unknown-batches" if unknown else "needs-selection")
     if ready and _already_uploaded(h2, r2, pid, lookups if lookups is not None else {}):
         status = "already-uploaded"
     e.update(csv_path=str(csv_path), header=h2, conv_rows=r2, name=block.get("name"),
              project=block.get("project"), mapping_template=block.get("mapping_template"),
              mapping_ok=res["ok"], unmapped=res["unmapped"], missing=res["missing"],
-             kept=len(r2), dropped=dropped, renames=renames, status=status)
+             kept=len(r2), dropped=dropped, renames=renames, corrections=corrections,
+             unknown_batches=unknown, status=status)
     return _unit_view(fid)
 
 
@@ -222,11 +248,13 @@ async def upload(files: list[UploadFile] = File(...)):
     """Accept one or more .xlsx; return a flat list of submission units."""
     units = []
     lookups = {}   # pid -> CDD data, fetched once per request for the dup check
+    batch_cache = {}   # molecule-batch id -> registered? reused across units
     for uf in files:
         raw = STAGE_DIR / f"raw_{uuid.uuid4().hex}.xlsx"
         raw.write_bytes(await uf.read())
         try:
             header, rows = cu.read_upload_sheet(raw)
+            rows = cu.normalize_species(header, rows, cu.species_alias_map(CONFIG))
         except cu.UploadSheetError as ex:
             fid = uuid.uuid4().hex
             STAGE[fid] = {"parent": uf.filename, "species": None, "pid": None,
@@ -244,10 +272,10 @@ async def upload(files: list[UploadFile] = File(...)):
                 pid = det["species_pids"].get(species) or det["species_pids"].get(
                     species.title()) or det["species_pids"].get(species.capitalize())
                 units.append(_stage_unit(uuid.uuid4().hex, uf.filename, species,
-                                         header, srows, pid, cands, lookups=lookups))
+                                         header, srows, pid, cands, lookups=lookups, batch_cache=batch_cache))
         elif det["status"] == "single":
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
-                                     header, rows, det["pid"], cands, lookups=lookups))
+                                     header, rows, det["pid"], cands, lookups=lookups, batch_cache=batch_cache))
         else:  # unknown / ambiguous — user must pick from the dropdown
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
                                      header, rows, None, cands, lookups=lookups))

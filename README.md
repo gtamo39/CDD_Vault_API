@@ -39,10 +39,16 @@ chmod 600 ~/.MS_pwd.txt
 ### Email notification on a successful import (optional)
 
 Set a metadata-only email to fire whenever an import reaches `committed`. Enable
-it in the `notifications:` block of [config/config.yaml](config/config.yaml)
-(recipient/sender/SMTP host), put your Outlook **app password** in the file named
-by the block's `password_file` (`chmod 600` — never committed), then verify SMTP
-works before trusting it on a real run:
+it in the `notifications:` block of [config/config.yaml](config/config.yaml).
+
+**Use `transport: graph`.** Microsoft disables SMTP basic auth by default on M365
+tenants, so the older `transport: smtp` path no longer works on this tenant. Graph
+uses OAuth2 **app-only** auth (no user sign-in, no MFA prompt) and needs an Azure AD
+app registration with the **`Mail.Send` application permission and admin consent**.
+Put `tenant_id` and `client_id` in the config block, and the **client secret** in the
+chmod-600 file named by `client_secret_file` — never in config. Ask IT to scope the
+permission to the sender mailbox with an Application Access Policy, or the app can
+send as any mailbox in the tenant. Then verify before trusting it on a real run:
 
 ```bash
 python3 python/import_to_protocol.py --test-notification   # sends one test email, no upload
@@ -171,7 +177,14 @@ progress. When every run commits, it **verifies the committed data against the
 source files** (see below): each row flips to **SUCCESS** and the button turns
 **azure** if CDD's values match, or shows a mismatch otherwise.
 
-At staging (before the ready flag), each unit is also checked against CDD for a
+At staging (before the ready flag), every identifier is checked against CDD. If a
+batch id isn't registered there, the row turns red — **unknown batch id** — and
+**Submit stays disabled**. CDD rejects an entire file over one unknown id, so this
+catches it before the upload. The usual cause is a CRO sending the *molecule* id
+(`SRB-0013325`) without its batch suffix (`SRB-0013325-001`). Fail-safe: if the
+token or network is unavailable the check is skipped rather than blocking.
+
+Each unit is also checked against CDD for a
 **duplicate**: if every compound already exists there with matching values, the
 row shows an orange **already uploaded** flag instead of green **ready**, and is
 skipped on submit — so you can't upload the same data twice. (Best-effort: needs
@@ -237,6 +250,7 @@ It reports, per file:
 |---|---|
 | A sheet named `Upload` exists | Without it the import app cannot read the report at all |
 | The identifier column is present | Must be one `Molecule-Batch ID` (`SRB-XXXXXXX-NNN`), never split `Compound ID` + `Batch No` |
+| Every identifier is a **full batch id** | `SRB-0013325` is a *molecule* id and is rejected — it needs the batch suffix, `SRB-0013325-001`. One bad id rejects the whole file |
 | Every endpoint column is present and spelled exactly right | The CDD mapping template matches on the literal column name |
 | Numeric result columns hold numbers only | CDD rejects a row with text (`NA`, `ND`) in a numeric field — the cell must be left empty |
 | No unexpected extra columns; key fields filled on every row | Warnings — these do not block, but usually signal a wrong template |

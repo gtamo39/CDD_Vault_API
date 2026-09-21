@@ -1,9 +1,9 @@
 # CDD_Vault_API — project wiki
-_Updated: 2026-07-13. Durable, aggregate memory of this repo — read at session start. Aggregate only: no SMILES / compound IDs / per-compound values._
+_Updated: 2026-09-17. Durable, aggregate memory of this repo — read at session start. Aggregate only: no SMILES / compound IDs / per-compound values._
 
 ## Where we are now
 - **Purpose:** local-only tooling around the CDD Vault REST API (vault **7108**) — export collections, download structure PNGs, bulk-import assay data into protocols, and reshape CRO data for upload.
-- **Current state (2026-07-13):** all WuXi protocols on the new upload format and importing end-to-end (MDR1, 3 ADME, both microsomal). Drag-drop webapp is the primary import path — detect→split→check→submit, then a per-compound summary table (Compound | Run date | Assays) shown locally and emailed to the team on commit. Email code is done but **transport is blocked** (tenant SMTP AUTH disabled — awaiting IT). Env is now conda `cdd` (Py 3.12).
+- **Current state (2026-09-17):** all WuXi protocols import end-to-end. **PPB is now split across 6 species protocols** (mouse 125963 + Human/Monkey/Dog/Rat/10%FBS 135299-135303), each with its own `*_GT` mapping template, and value corrections (NA fills + 1-decimal rounding) now run AUTOMATICALLY from config on every upload. Drag-drop webapp is the primary import path. Email transport is still **blocked** (tenant SMTP AUTH disabled — awaiting IT). Env is conda `cdd` (Py 3.12).
 - **MDR1 protocol import works end-to-end (2026-06-26):** slurp 3460913 → `committed`, 2/2 records. Full Slurps flow proven (POST→`id`, poll→`state`, `committed`).
 - **Scripts** (those that hit CDD share auth: `X-CDD-Token` header, token from `~/.cdd_token`, base `https://app.collaborativedrug.com/api/v1`):
   - `python/get_library.py` — export collections → CSV / SDF / `pandas.DataFrame` (`get_df`).
@@ -16,6 +16,7 @@ _Updated: 2026-07-13. Durable, aggregate memory of this repo — read at session
   - `python/detect_protocol.py` — column-signature protocol detection from `config.yaml` (offline; single / species-group / unknown).
   - `python/notify.py` — optional email (stdlib SMTP): `notify_committed` (metadata-only, CLI) + `notify_compound_summary` (per-compound rollup table, includes batch ids by authorized override; webapp). Sending never raises.
   - `python/check_cdd_commit.py` — post-commit audit: fetch each protocol's data back from CDD and verify every source-file compound exists + its numeric readout values match. Reuses convert_upload/detect_protocol/get_protocol_data. SUCCESS/fail exit code; stdout metadata-only; per-compound detail → local `<file>.verify.txt`. `--compare` also writes `<file>.compare.csv` (per-field CDD-vs-WuXi side-by-side for compounds already in CDD).
+  - `python/delete_protocol_rows.py` — delete protocol readout rows selected by Species value. DRY-RUN by default (`--execute` required), backs up every selected row to CSV first, `--exclude-run` protects a run from selection, stdout metadata-only.
   - `static/verify_file.html` — standalone offline format checker **we send to WuXi** (no server/CDN; parses xlsx in-browser). See its section below.
   - `webapp/` — local-only FastAPI drag-drop import UI reusing the modules above. Run: `conda activate cdd && python webapp/app.py` → http://127.0.0.1:8000. Shows the file table + a per-compound summary (Compound | Run date | Assays), submits the batch, then emails the summary to the team.
 - **Open threads:**
@@ -39,6 +40,544 @@ _Updated: 2026-07-13. Durable, aggregate memory of this repo — read at session
 - **De-branded before sending (2026-09-14):** on review, all "CDD" and "Serac" wording was stripped from the page — title/eyebrow/lede are now generic, and rejection messages say "the import rejects…" instead of naming CDD. The CRO does not need to know which vault product we use. **The two exceptions are `Serac Comment` and `Serac Comment - PgP inhibitor`, which are literal MDR1 COLUMN NAMES in the workbook** — renaming them would break validation, so they stay. Audit confirmed the file carries no token, vault id, PID/readout id, project, template name, email, host, path, or any chemistry, and has **zero network primitives** (no fetch/XHR/beacon/WebSocket/Worker/dynamic-import/img/iframe/form/src) and no storage — it only reads the file dropped on it and renders locally, with filenames + cell tokens HTML-escaped. Practical note: email gateways often strip `.html` attachments — zip it or share via a drive link. No telemetry by design, so we cannot tell whether WuXi actually runs it.
 - **Not wired into the webapp** — it is a deliverable we hand out, not part of the import flow. The server-side webapp keeps its own (authoritative) detection via `detect_protocol`.
 
+## A mapping template is BOUND TO ONE PROTOCOL — never reuse one (2026-09-17)
+
+**Question that prompted this:** "would `PPB_GT` work for 135303 `ppb UC (10% FBS)`?" **Answer: NO, and
+trying it is a silent data-integrity risk, not a clean failure.**
+
+**Evidence (from the API, `GET /vaults/7108/mapping_templates/<id>`):** a template stores
+`header_mappings`, and each maps a file column to a specific **ReadoutDefinition id**, which belongs to
+exactly one protocol. `PPB_GT` (id 59178) maps `Study number`->1773615, `Date`->1773616, ... all tagged
+`protocol_name: "Ppp UC (mouse)"` — i.e. **125963's** readouts (1773615-1773623). Protocol 135303 owns a
+disjoint set (1964917-1964925). Identical column NAMES are a coincidence of naming; the binding is by id.
+
+**Why it is dangerous, not just wrong:** `build_payload` sends `{project, mapping_template, autoreject,
+runs}` — it **never sends a protocol id**. The template alone decides the destination. So
+`--protocol 135303 --mapping-template PPB_GT` would NOT import into 135303; `--protocol` only selects the
+config block for the offline header check. The rows would land in **125963 (mouse)**, with no error,
+because the columns match perfectly.
+
+**Consequence:** one template per protocol, always. This is also why `HLM_GT` and `MLM_GT` exist
+separately despite human/mouse microsomal sharing an identical column set — same root cause, and it was
+never written down until now. The five new PPB protocols each need their own template.
+
+**Useful endpoints (read-only, metadata only):** `GET /vaults/<v>/mapping_templates` lists all (67 in this
+vault; summary fields only), and `GET /vaults/<v>/mapping_templates/<id>` returns the full
+`header_mappings` — the fastest way to check what an existing template actually targets.
+
+## Recipe — build a CDD mapping template with a one-row CSV (2026-09-17)
+
+**Why:** a protocol cannot be imported to until a saved mapping template exists, and the template can
+only be built by hand in the CDD web UI. The webapp hides a protocol with an empty `mapping_template`
+(`_importable_protocols()`, app.py:73) and refuses READY (app.py:149). A **one-row CSV** is the fastest
+way through the wizard: it carries the real header, so every column can be mapped, and it commits one
+record instead of hundreds.
+
+**Steps:**
+
+1. Cut one row out of a real report, through the SAME conversion path the webapp uses, so the CSV is
+   genuinely import-ready:
+   - `read_upload_sheet` -> `normalize_species` (canonical species) -> `split_species` -> pick the unit
+   - `reconcile_identifier` + `drop_blank_identifier_rows` -> `write_csv` (UTF-8-BOM)
+   - Pick the **most complete row** (fewest blank cells) so every column shows a value in the wizard.
+2. Pre-flight it offline: `itp.evaluate_mapping(header, block)` must return `ok=True`, `unmapped=[]`,
+   `missing=[]`. This proves the header matches the config block BEFORE touching CDD.
+3. In the CDD UI: *Import Data* -> upload the CSV -> pick the protocol -> map each column -> **save as a
+   named template** (convention `*_GT`).
+4. Put the template name in `config/config.yaml` under that PID, then restart the webapp.
+
+**First use (2026-09-17):** `data/uploads/20260917/2026_09_17_PPBUC_10pctFBS_template_1row.csv` — one
+`10%FBS` row (10 of the 114 source rows were 10%FBS after normalisation) cut from
+`data/uploads/20260831/2026_08_31_PPBUC_433706_all_corrected.xlsx`, for PID **135303** `ppb UC (10% FBS)`.
+Validates `mapping_ok=True`, 10 columns, 8 of 10 populated (the two blanks are free-text comment columns).
+
+**Screenshots of the wizard live in `wiki/img/` and MUST be redacted first.** `wiki/` is NOT gitignored
+(only `data/` is), so an unredacted screenshot commits a compound id + its values into the repo, which the
+aggregate-only wiki rule forbids. Workflow:
+
+1. Save the raw screenshot under `data/uploads/<date>/` — gitignored, so the original never leaves the machine.
+2. Black out the data row with ImageMagick (installed; no Pillow in the env):
+   `convert raw.png -fill black -draw "rectangle <x1>,<y1> <x2>,<y2>" wiki/img/<name>.png`
+   Keep the green header row, the mapping arrows and the blue panel — those carry no compound data and are
+   the whole point of the picture.
+3. Check the output by eye, then embed with a path relative to `wiki.md`: `![alt](img/<name>.png)`.
+
+**CAUTION — the row commits as real data.** It is a genuine 10%FBS measurement, so it belongs in 135303,
+but it will also appear in the full upload later. Either delete that run afterwards (protocol -> Runs tab)
+or let the duplicate guard skip it. Check whether the wizard can save a template WITHOUT completing the
+commit — if it can, abort after saving and nothing is written at all (unverified).
+
+**Do NOT fabricate rows for the other species.** The 2026-08-31 file holds only Mouse and 10%FBS, so
+Human/Monkey/Dog/Rat have no real data yet. Repeat this recipe per protocol when WuXi first sends that
+species. Never invent a compound to make a template, and never feed a 10%FBS row to the Human protocol
+just to map columns — it would commit wrong data. All six PPB protocols share ONE column set, so each
+template is the same mapping, only built per protocol.
+
+## PPB audit — 10%FBS data is MISFILED inside the mouse protocol (2026-09-17)
+
+**Question:** is all of CDD's ppb-mouse data inside `data/uploads/20260831/2026_08_31_PPBUC_433706_all_corrected.xlsx`,
+or is there newer data? **Answer: the file is complete and current — but CDD 125963 is holding data that
+does not belong to it.**
+
+- CDD **125963** holds **114 distinct compounds** across **27 runs** (142 protocol-data rows).
+- The 2026-08-31 file holds **114** too: **104 `Mouse` + 10 `10%FBS`**.
+- Set comparison: **in both 104 / only-in-CDD 10 / only-in-file 0**, and the 10 "only in CDD" are EXACTLY
+  the file's 10 `10%FBS` compounds. `cdd_ids <= (mouse | fbs)` is **True** — the file covers CDD 100%.
+- **Nothing is missing, and there is no new data:** the newest run carrying rows is **2026-08-28**, before
+  the file was built. (Counts only; no compound ids left the machine.)
+
+**The real finding: the 10 `10%FBS` compounds sit in protocol 125963 (mouse).** They were uploaded there
+because 135303 did not exist yet. They should move to 135303 now that it has a template.
+
+**CORRECTION (2026-09-17) — an earlier version of this entry was WRONG.** It claimed "26 FBS rows across 10
+runs, 4 of them MIXED with mouse data". That came from selecting rows by **compound identity** (every row of
+any compound in the FBS set), which over-counts: a compound can hold rows for several species. The correct
+selector is the stored **Species readout value** (`1773617`). Redone properly:
+
+**Rows in 125963 by stored Species value (142 total):** `Mouse` 117 + `mouse` 3 = **120 Mouse**;
+`10%FBS` 10 + `FBS` 6 = **16 FBS**; **`Human` 1, `Monkey` 1, `Rat` 1, `Dog` 1**; 2 rows with a BLANK species.
+
+**So 125963 is holding SIX species, not two.** And every FBS row sits in a run with **zero** Mouse rows:
+
+| Run | Date | Non-mouse rows | Mouse rows |
+|---|---|---|---|
+| 2108013 | 2026-06-17 | 2 blank-species | 3 (mixed) |
+| 2210918 | 2026-08-28 | 1 FBS + 1 Human + 1 Monkey + 1 Rat + 1 Dog | 0 |
+| 2210919 / 2210923 / 2210924 / 2210929 | 2026-08-28 | 2 / 6 / 1 / 6 FBS | 0 |
+
+**Deleting the 16 FBS rows touches NO mouse data** — the earlier "4 mixed runs, do not delete" warning was an
+artefact of the bad selector. The only genuinely mixed run is 2108013, and it holds blank-species rows, not FBS.
+
+**Human/Monkey/Rat/Dog DATA EXISTS after all (1 row each, run 2210918).** This corrects the earlier claim that
+"no data exists for those species" — that was true of the FILES on disk, but CDD itself has one row per species.
+**These rows can seed the four remaining mapping templates** via the one-row-CSV recipe, without waiting for WuXi.
+
+**Species matching is now WHITESPACE-INSENSITIVE (2026-09-17).** New `convert_upload.species_key()` folds a
+Species cell to lowercase with ALL spaces removed, and both `species_alias_map()` and `normalize_species()` use
+it. This matters because the CDD protocol is named `ppb UC (10% FBS)` **with a space**, so `10% FBS` is a very
+likely CRO spelling — and it previously did NOT route. Now `FBS`, `fbs`, ` FBS `, `10%FBS`, `10% FBS`,
+`10 % FBS` and `10%  fbs` all canonicalise to `10%FBS`; `Mouse`/`mouse`/`MOUSE` all give `Mouse`. An unknown
+species (e.g. `hamster`) still passes through untouched so it surfaces for manual review rather than being
+mis-routed. This runs on EVERY uploaded file in `webapp/app.py` right after `read_upload_sheet`, so raw WuXi
+files are covered, and the corrected value is what gets written to the CSV and stored in CDD.
+
+**Extracted the misfiled non-mouse species back out of CDD (2026-09-17):**
+`data/uploads/20260917/2026_09_17_PPBUC_other_species_all_corrected.xlsx` — an `Upload`-tab workbook holding
+the **4 rows** for `Human`/`Monkey`/`Rat`/`Dog` pulled from 125963, with the standard PPB corrections applied
+(`%Unbound` NA->0, `%Bound` NA->100, 1-decimal rounding; 0 NA fills were actually needed). Verified through the
+real pipeline: detects `species_group` conf 1.0 and splits into 4 units, each routing to its own protocol with
+`mapping_ok=True` — the only blocker is the missing template. Per-species one-row CSVs are in
+`data/uploads/20260917/processed/`, so **each of the 4 remaining templates can be built right now** with the
+one-row recipe; no need to wait for WuXi. **Still unresolved: the 2 blank-Species rows** (run 2108013,
+2026-06-17) — `split_species` drops blank-species rows, so they route nowhere and need a manual decision.
+
+**Backups taken before any delete (2026-09-17)** — `data/uploads/20260917/backup_125963_nonmouse_*.csv`, one file
+per species (10%FBS 16, Human/Monkey/Rat/Dog 1 each, unknown 2 = 22 rows). Gitignored; written straight to disk,
+contents never printed.
+
+**Programmatic deletion is supported** (the web UI was failing for this): `DELETE /vaults/<v>/readout_rows/<id>`
+removes ONE readout row, and `DELETE /vaults/<v>/runs/<id>` removes a whole run. Each protocol-data row's `id`
+IS the readout-row id, so `protocol_rows()` already gives the handles. New tool **`python/delete_protocol_rows.py`**
+selects by Species value, is **DRY-RUN by default** (`--execute` required), writes a backup CSV before the first
+delete, and keeps stdout metadata-only.
+
+**Also: run 2228508 (2026-09-17) has ZERO data rows** — an empty run, almost certainly created by the
+mapping-template wizard ("Create a new run") while building `PPB_10%FBS_GT`. Harmless, but worth deleting.
+Watch for this after every template build.
+
+**Split CSVs produced (2026-09-17)** in `data/uploads/20260831/processed/` — the same pattern as the MMS
+Human/Mouse split: `..._all_corrected_Mouse.csv` (104 rows -> 125963, `PPB_GT`) and
+`..._all_corrected_10pctFBS.csv` (10 rows -> 135303, `PPB_10%FBS_GT`). Both `mapping_ok=True`, 0 dropped.
+The webapp does this split in memory automatically; these files are for the CLI path.
+
+## 132956 `Reworked - PPB (UC)` is WIDE per-species — it cannot be the all-species protocol (2026-09-17)
+
+The plan was to point a species-agnostic "holds all PPB data" protocol at **132956**. Its actual shape
+blocks that. `--describe-protocol 132956` returns **12 readouts in a WIDE, per-species layout**:
+
+- `%Unbound - Mouse`, `%Bound - Mouse`, `%Remaining - Mouse`
+- `%Unbound - Human`, `%Bound - Human`, `%Remaining - Human`
+- `Study number`, `Date`, `Species`, `Provider Comment`, `Provider Name`, `Serac Comment`
+
+**Three blockers:**
+
+1. **It only knows Mouse and Human.** `Species` is a **required PickList** whose only values are `Human`
+   and `Mouse`. There are no columns for Monkey, Dog, Rat or 10%FBS, so it structurally cannot hold "all
+   PPB data irrespective of species", and a `10%FBS` value would be rejected by the picklist.
+2. **A raw WuXi PPB file cannot map to it.** The file is LONG (one `%Unbound` column + a `Species` column);
+   132956 is WIDE (one column per species). One file column cannot map to two readouts, so a
+   **long->wide pivot** is required first (the `convert_dataset.convert_to_target_format` pattern used for
+   MDR1) — new conversion code, not just a template.
+3. **Its numeric readouts are `data_type: Number`** (2 decimal places), unlike 125963/135303 where every
+   readout is `Text`. A Number field REJECTS text, so any `NA` triggers the
+   "Ignore text value in numeric fields" rejection we already hit on MDR1.
+
+**Conclusion:** a species-agnostic catch-all wants a LONG-format protocol with the SAME 9 readouts as the
+per-species ones. Then the identical CSV uploads to it unchanged (no pivot), and it accepts any species
+because `Species` is just a cell value. 132956 is a different thing — a Mouse-vs-Human comparison table.
+
+**DECISION (2026-09-17): PARKED.** The all-species/catch-all idea is dropped for now — we stay with the
+per-species protocols only (125963 mouse + 135303 10%FBS). **Config was NOT changed**, and 132956 is not
+referenced by config. If it is revived, note the catch-all mechanism is sound but is NOT config-only: the
+webapp emits exactly one unit per species today, so an extra all-rows unit needs a code change in
+`webapp/app.py` and `check_cdd_commit.load_units` plus a flag on the catch-all block — and the target should
+be a NEW long-format protocol (same 9 readouts), not 132956.
+
+## Duplicate handling on re-upload — what actually happens (2026-09-17)
+
+**CDD never overwrites.** A slurp always creates a **NEW RUN**; there is no upsert or merge. Uploading the same
+compound twice leaves it with two runs, and the older one has to be deleted by hand.
+
+**The webapp's guard is PER UNIT and ALL-OR-NOTHING.** `_already_uploaded()` (app.py) returns True only when
+`checked > 0 and not missing and not mismatch` — i.e. EVERY compound in the unit is already in CDD **and**
+every compared value matches. Then the row shows orange `already uploaded` and is skipped on submit.
+
+**If even ONE row is new, or ONE value differs, the WHOLE unit uploads** — including the rows that were already
+there, which then duplicate. It does **not** filter row-by-row. That is the main trap: a mostly-duplicate unit
+with one changed value re-uploads everything.
+
+**Observed live (2026-09-17)** on `2026_09_17_PPBUC_other_species_all_corrected.xlsx`, after the 4 templates
+were built (building a template COMMITS its one-row CSV — expected, and that row is genuine data):
+
+| Species | In target protocol | Status | Why |
+|---|---|---|---|
+| Human | 1 | ALREADY UPLOADED (skipped) | all values match |
+| Monkey | 1 | ALREADY UPLOADED (skipped) | all values match |
+| Rat | 0 | READY | compound absent — the Rat template build did not commit |
+| Dog | 1 | **READY (will duplicate)** | `%Unbound` differs by a **rounding-level** gap (<0.05) |
+
+**The Dog case is a lesson:** `data/uploads/20260917/` holds BOTH `backup_125963_nonmouse_*.csv` (raw,
+full-precision, straight from CDD) and `processed/*_template_1row.csv` (corrected, rounded to 1 dp). The Dog row
+in CDD appears to have come from the RAW backup, so it disagrees with the corrected file at the 2nd decimal and
+the guard correctly refuses to call it a duplicate. **Always upload the `processed/` files, never the `backup_`
+ones** — the backups exist only as a safety copy before deletion.
+
+**THE 1% TOLERANCE MASKS ROUNDING — this defeats a "re-upload to round the values" plan (2026-09-17).**
+The guard compares with `VERIFY_TOL = VERIFY_REL = 0.01`, so a RAW value and its 1-decimal rounding usually
+count as EQUAL. Checked the 4 template rows both ways: at 1% tolerance Human/Monkey/Rat show **no** mismatch,
+but at EXACT tolerance all four mismatch on `%Unbound`, `%Bound` and `%Remaining` — i.e. **CDD is holding the
+RAW values for all four**, and only Dog's `%Unbound` gap is wide enough to exceed 1%.
+
+Consequence: submitting the corrected file **cannot** convert those rows to 1-decimal. Human/Monkey/Rat are
+skipped as "already uploaded" and KEEP their raw values; only Dog uploads, and it ADDS a 2nd run rather than
+replacing the first. **To actually enforce the rounded values you must DELETE the existing rows first, then
+upload** — `delete_protocol_rows.py --protocol <pid> --species <sp> --execute`, then submit the corrected file
+so each species lands as a single clean run. (Building the 4 templates committed one row each into
+135299-135302, runs 2228599/2228603/2228607/2228610, all dated 2026-09-17.)
+
+**Diagnostic gotcha:** `check_unit()` mismatch entries use the key **`column`** (plus `batch_id`, `file`, `cdd`),
+NOT `field`. Filtering on `field` silently yields an empty list and makes a real mismatch look clean.
+
+## BUG in the 2026-08-31 extraction: "latest run per compound" dropped whole species (2026-09-17)
+
+**Prompted by "can we also have latest-run-per-compound for the other species?"** For the other species it was
+already effectively satisfied (10%FBS: 16 rows -> 10 distinct compounds, already deduped; Human/Monkey/Rat/Dog
+hold 1 row each). But the question exposed a real defect in the original workflow.
+
+**The defect:** the 2026-08-31 extraction keyed "latest run" on the **COMPOUND alone**. A compound measured in
+several species therefore kept only its single most-recent run, and every other species' row for that compound
+was silently discarded. **7 compounds are measured in more than one species** in 125963 — 6 as
+`10%FBS`+`Mouse`, and 1 as `10%FBS`+`Dog`+`Human`+`Monkey`+`Rat`.
+
+**Consequence:** the 2026-08-31 file was missing 10 (compound, species) pairs — the 6 MOUSE rows whose compound's
+latest run happened to be an FBS run, plus 4 rows from the multi-species compound. This is the real explanation
+for the earlier observation "6 mouse compounds in CDD are absent from the file's Mouse rows".
+
+**The fix: key on `(compound, species)`, not `compound`.** Regenerated as
+`data/uploads/20260917/2026_09_17_PPBUC_all_species_latest_corrected.xlsx` — latest run per (compound, species)
+across the WHOLE of 125963, with the standard corrections (`%Unbound` NA->0 x11, `%Bound` NA->100 x11, 1-decimal
+rounding).
+
+| | old (2026-08-31) | new (2026-09-17) |
+|---|---|---|
+| (compound, species) pairs | 114 | **124** |
+| recovered by the fix | — | **10** (nothing lost: old-minus-new = 0) |
+
+142 CDD rows collapse to 124. Per species: Mouse 110, 10%FBS 10, Human/Monkey/Rat/Dog 1 each. Verified through
+the real pipeline: `species_group` conf 1.0, all six units `mapping_ok=True` with a template each.
+
+**The corrected xlsx is NOT a backup — do not treat it as one.** It differs from CDD 125963 two ways:
+it is **deduped** (142 CDD rows -> 124: drops 10 Mouse + 6 10%FBS repeat measurements, and the 2 blank-species
+rows route nowhere so they vanish) and it is **corrected** (NA fills + 1-decimal rounding), so even the 124 rows
+it keeps no longer hold CDD's values.
+
+**Cross-checked against a CDD-UI export (2026-09-17):** the user exported `20260917_PPB_backup.csv` from the
+vault UI. Verified EQUIVALENT to our API backup **without either file's values being displayed** — compare by
+canonicalising each cell (trim, collapse spaces so `< 0.5`==`<0.5`, numeric re-format so `37.90`==`37.9`,
+NA/blank unified), hashing each row with SHA-256, and comparing the multisets. Result: **142 rows each, 111
+distinct molecules each, and the full (molecule name + 9 readouts) multisets are IDENTICAL.** This hashing
+recipe is the way to diff two chemistry files while honouring the local-only rule.
+
+**Their UI export has two gaps — keep the API backup as the authoritative one for restore:** (1) `CDD Number` is
+**blank on all 142 rows**, so it cannot be used as a join key (we matched on `Molecule Name` instead); (2) it
+carries **no batch column**, only `Molecule Name`, while 3 molecules here hold more than one batch — those rows
+are ambiguous in the UI export. Our API backup keeps `Molecule-Batch ID`, `batch`, `run`, `run_date` and
+`readout_row_id`, so it alone supports a row-level restore. Column naming also differs: the UI prefixes each
+readout with `Ppp UC (mouse): `, and its `Serac Comment` is our `Comment` (readout 1773622).
+
+**True backup: `data/uploads/20260917/backup_125963_FULL_raw_20260917.csv`** — all **142** rows, RAW values, no
+dedup, no corrections, blank-species rows included, and carrying `readout_row_id` + `run` + `run_date` +
+`molecule`/`batch` so any row can be traced or restored. **Take a fresh one of these before any deletion.**
+
+**Rule for any future PPB extraction: the dedup key is (compound, species).** Keying on compound alone loses data
+whenever a compound is assayed in more than one matrix.
+
+## Corrections are now AUTOMATIC and config-driven (2026-09-17)
+
+**The gap:** the `%Unbound` NA->0 / `%Bound` NA->100 / 1-decimal rules existed only inside one-off scripts (the
+2026-08-31 notebook cells and an ad-hoc extraction). The webapp pipeline applied NO value corrections at all, so
+a RAW WuXi file would have imported `NA` as literal text with full decimals — silently, because the PPB readouts
+are `Text` type and CDD accepts `NA` without an error.
+
+**The fix:** new **`convert_upload.apply_corrections(header, rows, block)`**, driven by a per-protocol
+`corrections:` block in config (config over code — add a rule there, never in Python):
+
+```yaml
+corrections:
+  fill_na:  {"%Unbound": 0, "%Bound": 100}   # empty/NA cell -> this value
+  round_to: {1: ["%Unbound", "%Bound", "%Remaining"]}
+```
+
+Behaviour: NA means empty/`NA`/`N/A`/`nan`/`none`/`ND`/`N.D.`; fills run BEFORE rounding; a `<`/`>` qualifier is
+preserved (`<0.567` -> `< 0.6`); columns absent from the header are skipped silently; the caller's rows are never
+mutated; it returns a `(rows, summary)` pair whose summary counts changes per column (counts only, no values).
+**`%Remaining` deliberately has no fill rule** — an NA there stays NA, only rounding applies, matching the
+2026-08-31 decision.
+
+**Wired into BOTH paths, per unit (after the pid is known, since rules are per protocol):** `_stage_unit` in
+`webapp/app.py` (before the CSV is written, and the counts are stored on the unit record) and `_unit` in
+`check_cdd_commit.py` — the second is essential, or verification would compare a RAW file against corrected CDD
+values and report false mismatches.
+
+**Scope:** the `corrections:` block is on the 6 PPB protocols only. LogD / TSY / MDR1 / microsomal have none and
+are provably untouched (a no-op returns the same list object).
+
+**Verified end-to-end** on a synthetic raw file (`TEST-` ids): `NA`->0/100, `95.4321`->`95.4`, `<0.567`->`< 0.6`,
+`%Remaining` NA left as NA, and species spellings (`mouse`, `FBS`) still canonicalised first. 10 new unit tests,
+59 total, all pass.
+
+## Upload the 5-SPECIES file, not the all-species one (2026-09-17)
+
+**Deletions completed by the user:** 125963 is down to **122 rows (120 Mouse + 2 blank-species)** — the 20
+non-mouse rows are gone — and 135299/135300/135301/135302/135303 are all at **0 rows**.
+
+**Trap found in pre-flight:** the all-species file was expected to have its Mouse unit skipped as a duplicate.
+It is NOT. `check_unit` on its 110 Mouse rows gives **matched 81, missing 0, and 29 mismatches on `%Unbound`**,
+so the unit is READY and would push 110 rows into 125963 — duplicating data we deliberately agreed to preserve.
+
+**Why:** the guard's tolerance is 1% RELATIVE. `%Unbound` values are frequently small (well under 1%), and
+rounding a small number to 1 decimal moves it by far more than 1% of itself (0.567 -> 0.6 is ~6%). So the
+rounding correction itself pushes ~29 of 110 mouse rows outside the duplicate tolerance. The NA->0 fills add to
+this: CDD holds blank where the corrected file holds 0. Re-applying corrections changes nothing here — the
+mismatch count is identical with and without them (the 24 "changed" rows are cosmetic, e.g. `0` -> `0.0`).
+
+**Lesson: a relative tolerance is the wrong guard for a near-zero readout.** The duplicate check is reliable for
+mid-range values and unreliable for small ones. Do not rely on it alone to protect a protocol from a re-upload.
+
+**Fix: `data/uploads/20260917/2026_09_17_PPBUC_5species_latest_corrected.xlsx`** — the same corrected extract with
+the Mouse rows removed: **14 rows** (10%FBS 10, Human/Monkey/Rat/Dog 1 each). Pre-flight confirms all 5 units
+READY, `mapping_ok=True`, each target protocol empty, 14 rows sent, and **125963 untouched**. Use this file.
+The all-species file stays as the complete corrected record, but must NOT be dropped into the webapp as-is.
+
+## Upload done + what DIFF means in the comparison table (2026-09-17)
+
+**The all-species file was uploaded as-is (user experiment).** Result matches the prediction exactly:
+
+| protocol | rows before | rows after | new run |
+|---|---|---|---|
+| 125963 mouse | 122 | **232** | 2228663 |
+| 135299 Human / 135300 Monkey / 135301 Dog / 135302 Rat | 0 | 1 each | 2228661 / 2228662 / 2228660 / 2228664 |
+| 135303 10%FBS | 0 | 10 | 2228658 |
+
+125963 now holds **230 Mouse rows but still only 110 distinct compounds** — so the UI grid is unchanged at 110
+rows and now displays the NEW (corrected) values, because it shows one row per compound and the new run is the
+latest. **The 120 original rows are still there, just invisible in that view.** To undo only this upload, delete
+run **2228663** (the snapshot `runs_before_upload_*.json` is what identified it).
+
+**CDD-UI vs API row counts:** the protocol-data grid collapses to one row per compound; the API returns every
+readout row. That is why the UI showed 110 while the API reported 120.
+
+**What DIFF means (`compare_value` in check_cdd_commit):**
+
+| CDD cell | verdict | shown |
+|---|---|---|
+| **empty / missing** | `False` | **DIFF** |
+| non-numeric text (`NA`, `N/A`) | `None` | blank — not comparable |
+| numeric | `True`/`False` | `ok` / `DIFF` |
+
+So a DIFF next to a numeric file value means CDD's cell is **EMPTY**, not that it holds `NA`. A literal `NA` in
+CDD is skipped, because text cannot be compared with a number. In 125963 there are **2 empty** `%Unbound` cells
+and **11 holding the text `NA`** — only the 2 empty ones can produce a DIFF. This matters because the PPB
+readouts are `Text` type, so a raw import stores `NA` as text rather than leaving the cell blank.
+
+## PPB migration COMPLETE — final state and how the mouse cleanup was done (2026-09-17)
+
+**Final state of the PPB family:**
+
+| PID | protocol | rows | compounds | template |
+|---|---|---|---|---|
+| 125963 | ppp UC (mouse) | 112 (110 Mouse + 2 blank-species) | 110 | `PPB_GT` |
+| 135299 | ppb UC (Human) | 1 | 1 | `PPB_HUMAN_GT` |
+| 135300 | ppb UC (Monkey) | 1 | 1 | `PPB_MONKEY_GT` |
+| 135301 | ppb UC (Dog) | 1 | 1 | `PPB_DOG_GT` |
+| 135302 | ppb UC (Rat) | 1 | 1 | `PPB_RAT_GT` |
+| 135303 | ppb UC (10% FBS) | 10 | 10 | `PPB_10%FBS_GT` |
+
+**How the mouse duplication was resolved — keep the new run, delete the old rows.** After the all-species upload
+left 125963 at 232 rows (120 old + 110 new), the user verified all 110 new rows against the old ones. Rather than
+wiping and re-uploading, we deleted only the OLD rows and KEPT the freshly uploaded run 2228663, using a new
+**`--exclude-run`** flag on `delete_protocol_rows.py`. 120 rows across 21 runs went; 112 remain. **This pattern is
+strictly better than delete-then-reupload:** one step, no window with no data, no second import to re-verify, and
+the surviving rows are the exact ones already checked.
+
+**What the repeat measurements actually were (corrects an earlier overstatement).** The 10 mouse compounds with
+2 rows each were NOT 10 genuine repeats: **9 were two rows in the SAME run holding IDENTICAL values** (an import
+that double-entered), and only **1** was a genuine re-measurement (2026-03-25 -> 2026-08-28). So the real cost of
+the wipe was 1 historical data point plus the run structure, not 10 measurements. Each row keeps its experimental
+date in the `Date` readout, so the dating survives as data even though the 21 runs do not.
+
+**Leftover: 25 EMPTY runs in 125963** (and 1 in 135299) — run records whose rows were all deleted. Harmless, but
+they clutter the Runs tab; delete them in the CDD UI if you want it tidy. Watch for these after any row-level
+deletion, and after each template build (the wizard creates a run even when nothing commits).
+
+**Still open: the 2 blank-Species rows in 125963** (run 2108013, 2026-06-17). They cannot be selected by species,
+`split_species` drops them on upload, and they route nowhere. They need a human decision.
+
+**Backups taken through the day, all in `data/uploads/20260917/` (gitignored):**
+`backup_125963_FULL_raw_*.csv` (142 rows, pre-cleanup), `backup_125963_PREUPLOAD_*.csv` (122 rows),
+`backup_125963_PREDELETE_*.csv` (232 rows, both old and new), `backup_125963_nonmouse_*.csv` (per species), plus
+`runs_before_upload_*.json` — the run-id snapshot that let us identify exactly which run an upload had created.
+**Taking a run-id snapshot before an upload is the reliable way to make that upload undoable.**
+
+## Pre-flight of `reports_with_no_issues` — no duplication risk, one file unroutable (2026-09-17)
+
+Checked the 9 corrected WuXi reports in `data/uploads/20260917/reports_with_no_issues/` (the fixed versions of
+the 20260914 failures) for duplication risk. Method: full pipeline per unit — read -> normalise species ->
+detect -> split -> reconcile identifier -> drop blank ids -> apply corrections -> `check_unit` against live CDD,
+counting matched / missing / mismatched compounds.
+
+**Result: NO duplication risk in any file.** Every unit is cleanly all-new or fully-already-present; **not one is
+PARTIAL**, which is the only dangerous shape (the guard is all-or-nothing, so a partial unit re-uploads its
+already-present rows).
+
+| outcome | units |
+|---|---|
+| all new -> clean upload | 8 microsomal units (88861 Human / 88862 Mouse) + 1 MDR1 file |
+| already uploaded -> skipped | 2 MDR1 files (4 and 2 compounds, all matching) |
+| **no route** | 1 unit — see below |
+
+**The exception: `2026_08_26_MMS_433706-2026080702-MMS_v1_Report_0 update.xlsx` is a RAT file.** Its single row
+has `species = Rat`, and detection returns `species_pids = {Human: 88861, Mouse: 88862}` only, because those are
+the only microsomal blocks carrying a `species:` field. So the row routes NOWHERE and is silently dropped — it
+cannot duplicate anything, but it also cannot import.
+
+**To enable RLM (PID 111161) the config block must be filled in** — today it is extraction-only (`name`, `alias:
+rlm`, `project`). CDD already defines its 10 readouts, and the protocol already holds **39 rows / 39 compounds
+across 5 runs, last touched 2025-11-14** (dormant since). The file's compound is **new** to it, so importing
+would not duplicate. Needed: `species: Rat`, `identifiers: {batch_id: "Molecule-Batch ID"}`, `label`, the readout
+map, and a `mapping_template` built with the one-row recipe.
+
+**Name mismatches to handle in that mapping (file column -> CDD readout):** `T½ (min)` -> `T½` (1476624),
+`CLint (raw) (μL/min/mg)` -> `CLint (raw)` (1476625), `species` -> `Species` (1476623), `Comment` ->
+`Serac Comment` (1476629). **CAUTION: `T½`, `CLint (raw)` and both `Remaining` readouts are `data_type: Number`**
+on 111161 (unlike the Text-typed PPB readouts), so any `NA` would be REJECTED rather than stored as text — a
+`corrections:` block is advisable there. Its `Species` PickList is `required` and allows only `Rat`.
+
+## 9 slurps AUTO-REJECTED on 2026-09-17 — one cause found, microsomal still open
+
+**Symptom:** all 9 submitted units showed `VERIFY FAILED (0 MISMATCH - N MISSING)` in the webapp. CDD had created
+a run for each (3 in 88861, 5 in 88862, 1 in 131399) but **every run holds 0 rows**. CDD emailed:
+*"The import ... contains at least one error or suspicious event and was rejected automatically"*, linking
+slurp 3651748 (`state=rejected`, `records_processed=2`, `records_committed=0`, `import_errors=2`).
+
+**`autoreject=true` is why one bad row kills the whole file** — `build_payload` sets it, so a single error rejects
+every record. CDD's email suggests `autoreject=false` to leave the slurp in accept/reject state for inspection.
+Worth adding as an option when diagnosing.
+
+**CONFIRMED cause (1 of 9): `433706-2026090401-MDR1_v3_report_1.xlsx` has `NA` in `Efflux ratio - PgP inhibitor`.**
+131399's readouts are `Number`, so text is rejected — the identical failure as the 2026-09-14 MDR1 file. The
+`static/verify_file.html` checker already flags exactly this, and WuXi shipped the file anyway.
+
+**ROOT CAUSE FOUND (user spotted it): WuXi wrote the MOLECULE id, not the MOLECULE-BATCH id.** Every MMS
+identifier is shaped `SRB-NNNNNNN` — **the trailing `-NNN` batch suffix is missing** (29/29 values). The MDR1
+files are correct: `SRB-NNNNNNN-NNN` (10/10). CDD therefore reports *"Record rejected because your database does
+not contain a molecule corresponding to SRB-XXXXXXX"*. Confirmed from both ends: **all 15 referenced molecules
+EXIST in the vault, but 0 of 15 match an actual batch identifier.**
+
+**METHOD WARNING — `GET /batches?molecule_batch_identifier=` is a PREFIX match, not exact.** An earlier check
+here used `count > 0` and wrongly concluded "all ids registered". `?molecule_batch_identifier=SRB` returns 16760
+rows. **Always compare the returned `molecule_batch_identifier` for equality**, never trust the count.
+
+**Fixing it locally is only partly safe:** of the 15 molecules, **12 have exactly ONE registered batch**
+(appending that suffix is unambiguous) but **2 have 2 batches and 1 has 3** — for those, guessing which batch was
+assayed could attach data to the wrong batch. **Preferred fix: WuXi resends with correct Molecule-Batch IDs**,
+since they hold the source of truth.
+
+**This is exactly what `static/verify_file.html` should have caught.** The checker currently verifies the
+identifier COLUMN exists but not the VALUE FORMAT. Adding an `SRB-XXXXXXX-NNN` shape check would have stopped
+this file at WuXi's desk.
+
+**Cleanup pending: 9 EMPTY runs** created by the rejected slurps (88861: 2228698/2228700/2228704, 88862:
+2228699/2228701/2228702/2228705/2228706, 131399: 2228703).
+
+## Two guards added against the truncated-batch-id failure (2026-09-17)
+
+**1. CRO-side — `static/verify_file.html` now validates the identifier VALUE, not just the column.**
+`BATCH_ID_RE` (`^[A-Za-z]+-\d+-\d+$`) must match every identifier; `MOLECULE_ONLY_RE` (`^[A-Za-z]+-\d+$`)
+detects the specific mistake and names the fix per value ("SRB-XXXXXXX" should be "SRB-XXXXXXX-001"). It is a
+BLOCKING check, and it reports up to 3 offending values. Verified: all 6 truncated MMS files now FAIL, both
+correct MDR1 files PASS, and the `NA` MDR1 file still fails on its numeric check. Regression suites unchanged
+(9 real 20260914 files + 9 synthetic). Send WuXi the updated file.
+
+**2. Serac-side — the webapp refuses to submit a unit whose batch ids are not in CDD.**
+New `check_cdd_commit.missing_batches(session, vault, mbids, cache)` compares the returned
+`molecule_batch_identifier` for EQUALITY (the endpoint is a prefix match — see the warning above) and returns
+the unregistered ids. `webapp/app.py` calls it via `_unregistered_batches()` in `_stage_unit`; any unknown id
+forces `status="unknown-batches"`, which `updateGate()` treats as unresolved, so **Submit stays disabled**. The
+row shows a red `unknown batch id` tag naming up to 3 offenders and the `-001` hint. A per-request `batch_cache`
+means each id is looked up once. **Fail-safe: a missing token or network error returns [] and never blocks** —
+the guard only blocks on a definite negative. app.js cache-buster bumped to `?v=2026-09-17-1`.
+
+Verified on the real files through the actual staging path: the truncated MMS unit -> `unknown-batches` (2 ids,
+submit blocked); the good MDR1 file -> `already-uploaded` (0 unknown). Together these two guards stop this class
+of failure at the CRO's desk AND at ours, instead of at CDD after 9 wasted slurps.
+
+## Email UNBLOCKED — Microsoft Graph OAuth2 transport built (2026-09-18)
+
+**IT confirmed the diagnosis we reached on 2026-07-20:** *"Your python script is using SMTP ... Microsoft has
+deactivated it per default on all M365 tenants. Microsoft does support modern authentication methods like OAuth2
+... Microsoft Graph (mail.send) and App registration."* That is exactly option (1) recorded back then, so the
+SMTP path is a dead end by tenant policy, not a bug.
+
+**Built: `transport: graph` in `notify.py`.** `_send()` now dispatches — `graph` -> `_send_graph()`, anything
+else -> the original SMTP path (kept, unchanged). New helpers: `_graph_token()` (OAuth2 **client-credentials**,
+app-only, so no user sign-in and no MFA prompt) and `_secret()` (one-line chmod-600 file). **No new dependency** —
+`requests` was already required.
+
+- token: `POST https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`, `grant_type=client_credentials`,
+  `scope=https://graph.microsoft.com/.default`
+- send: `POST https://graph.microsoft.com/v1.0/users/<sender>/sendMail`, `Authorization: Bearer <token>`;
+  **success is HTTP 202** with no body
+- **Graph carries ONE body part**, so the HTML rendering is sent when present, else plain text (SMTP still sends
+  true multipart/alternative). Comma-separated recipients are split into several `toRecipients`.
+- Same hard contract as before: **never raises**. A missing/blank credential, a rejected token, or a non-202
+  response logs a WARN and returns False, so a mail problem can never break or roll back an import.
+
+**Config (`notifications:`):** `transport: graph`, `tenant_id`, `client_id`, `client_secret_file:
+~/.auto_graph`. **The secret lives in a chmod-600 file, never in config** — same rule as `~/.cdd_token`. The
+legacy `smtp_host`/`smtp_port`/`password_file` keys stay for reference.
+
+**Still TODO — waiting on IT for three values** (`tenant_id`, `client_id`, and the **client secret**, which IT's
+email did not mention but the app-only flow requires), plus **admin consent** on the `Mail.Send` APPLICATION
+permission. **Security note to pass to IT: `Mail.Send` application permission grants send-as for EVERY mailbox in
+the tenant unless scoped.** Ask them to restrict it to `auto@seracbio.com` with an Application Access Policy
+(`New-ApplicationAccessPolicy`). Until the values land, `--test-notification` exits 1 with a precise WARN naming
+which of the three is missing.
+
+**Tested with a fully stubbed `requests`** (9 tests, no network, no secrets): 202 -> True, correct sendMail URL
+for the sender mailbox, client-credentials grant + `.default` scope, Bearer header, HTML preferred over text,
+text fallback, multi-recipient split, and soft-fail on both a 403 send and a 401 token. 69 tests total.
+
 ## Post-commit verification (check_cdd_commit.py, 2026-07-16)
 - **Purpose:** automate the manual "did it really upload?" check. For each committed workbook: detect protocol (+ species split) → fetch CDD protocol data → per compound, confirm a committed row EXISTS and numeric readout VALUES match. Webapp runs it automatically after commit (`POST /api/verify`) and flips rows + the Submit button to **azure "SUCCESS"** (`--azure #2f7bb5`); CLI returns SUCCESS/fail exit code.
 - **Match key (verified 2026-07-16):** file `Molecule-Batch ID` == CDD batch `molecule_batch_identifier`. Protocol-data rows carry `batch` as a **numeric id**, not the SRB string — map via `GET /vaults/{v}/batches?batches=id1,id2` → `molecule_batch_identifier`. (`molecule` and `run` are also numeric ids.)
@@ -60,6 +599,10 @@ _Updated: 2026-07-13. Durable, aggregate memory of this repo — read at session
 
 ## Decisions & conventions
 - **PPB correction + re-upload workflow (2026-08-31, in `vignettes/convert_dataset.ipynb` last 6 cells):** re-extract the whole PPB (UC) protocol (PID **125963**) from CDD, correct, repackage for re-upload. Backup = documented `get_protocol_data.get_data(experiments=['ppb'])` (molecule-keyed, SMILES) → CSV. Upload frame = **batch-keyed** extraction (get_data lacks the Molecule-Batch ID needed as the upload identifier): `protocol_rows` + `run_dates` + `check_cdd_commit.fetch_batch_identifiers`/`cell_value`, latest run per batch, mapped back to the config `readouts` columns. **Corrections:** `%Unbound` NA→0, `%Bound` NA→100; round `%Unbound`/`%Bound`/`%Remaining` to 1 decimal (`%Remaining` NA left as-is). Output = `Upload`-tab xlsx in `data/uploads/20260831/`. **PPB upload columns / readout ids (125963, template PPB_GT):** `Molecule-Batch ID`(identifier) · `Study number`=1773615 · `Date`=1773616 · `Species`=1773617 · `%Unbound`=1773618 · `%Bound`=1773619 · `%Remaining`=1773623 · `Provider Comment`=1773620 · `Provider Name`=1773621 · `Comment`=1773622. NOTE: re-upload APPENDS new runs (doesn't overwrite) — old + corrected runs coexist per compound until old ones are deleted. Also note: `Reworked - Plasma protein binding (UC)` PID 132956 exists in CDD but is NOT what config targets (config = 125963).
+- **PPB UC split into species protocols (2026-09-16):** CDD now has five new PPB protocols — `ppb UC (Human)` **135299**, `(Monkey)` **135300**, `(Dog)` **135301**, `(Rat)` **135302**, `(10% FBS)` **135303**. All five carry the SAME 9 readouts (Study number, Date, Species, %Unbound, %Bound, Provider Comment, Provider Name, **Serac Comment**, %Remaining) and are now in `config.yaml`. Every readout id was verified live against the API (45/45 match), not transcribed by hand. **The file's `Comment` column maps to CDD's `Serac Comment` readout** — in these protocols that readout exists by name, so the old 125963 `Comment`→Serac inference is now explicit. Aliases must be UNIQUE (`get_protocol_data.alias_map` is keyed by alias, so a duplicate silently overwrites): `ppb_human`/`ppb_monkey`/`ppb_dog`/`ppb_rat`/`ppb_fbs`; **125963 keeps alias `ppb`**, so existing calls like `get_data(experiments=['ppb'])` and the 2026-08-31 correction workflow keep working. **Detection consequence — `species: Mouse` ADDED to 125963:** the six PPB blocks share one column set, so a PPB file ties on columns alone. `detect_protocol` only returns a species group when >=2 tied blocks carry a `species:` field, and it routes by that value; without a species on 125963 the Mouse rows would have routed NOWHERE. With it, detection returns `species_group` conf 1.0 and `{Mouse:125963, Human:135299, Monkey:135300, Dog:135301, Rat:135302, '10%FBS':135303}`. Verified on both real PPB files: Mouse→125963 (unchanged), 10%FBS→135303. **`10%FBS` has NO SPACE** — that is what WuXi writes in the Species cell, and the routing key must match the cell exactly (the CDD protocol NAME says `10% FBS`, with a space; do not copy that). **CDD has no `ppb UC (Mouse)` protocol**, so mouse data stays on 125963. **PARTLY DONE (2026-09-17) — `mapping_template` was empty `""` on all five**: the templates do not exist yet and must be built by hand in the CDD web UI (the usual one-time dance), then written into config. An empty value makes `import_to_protocol.py` exit with a clear error BEFORE any upload, so this fails loudly, never silently. `project: FBXO31` assumed from the other blocks — confirm. **135303 is now LIVE:** template **`PPB_10%FBS_GT`** (id 61032) was built 2026-09-17 from the one-row CSV and is set in config. Verified via `GET /mapping_templates/61032`: all 10 columns bind to `ppb UC (10% FBS)` readouts and match the config ids exactly. The real 2026-08-31 file now yields TWO READY units (`10%FBS` 10 rows -> 135303, `Mouse` 104 rows -> 125963). **Still open: Human/Monkey/Dog/Rat (135299-135302)** have no template and stay hidden from the webapp dropdown until real data for those species arrives. The WuXi checker (`static/verify_file.html`) needs NO change: the PPB column set is unchanged. 35 unit tests still pass; LogD/MDR1/TSY still detect `single` and MMS still splits Human/Mouse.
+- **125963 still exists — CDD RENAMED it (2026-09-17):** `Plasma protein binding (UC)` is now called **`Ppp UC (mouse)`** in CDD. It was NOT deleted: it keeps **26 runs** (all historical mouse data) and **all 9 readout ids are still valid** (verified against the API). `Comment`→**`Serac Comment`** (1773622) is now CONFIRMED by name, so the old 2026-06 "inference" note is settled fact. **Search trap:** a grep for `plasma|protein|ppb|binding` MISSES this protocol — the new name contains none of those strings (`Ppp`, not `ppb`). Search protocol lists for `UC (` instead. `name:` in config synced to the CDD name. **`Ppp` looks like CDD's typo for `ppb`** — renaming it to `ppb UC (Mouse)` in the CDD UI would make the family consistent (`name:` is display-only, so a rename needs only a cosmetic config edit). `Reworked - Plasma protein binding (UC)` **132956** (12 readouts, 1 run) remains a separate protocol we do NOT target.
+- **Species alias normalisation (2026-09-17):** WuXi writes **`FBS`** in the Species cell, but the routing value is **`10%FBS`**. New top-level config key **`species_aliases:`** (`FBS: "10%FBS"`) maps a raw cell value onto the `species:` value the protocol blocks route on. New helper **`convert_upload.normalize_species(header, rows, aliases)`** rewrites the cells; the match ignores case and outer spaces (` fbs ` works), it is idempotent, it returns NEW rows (never mutates the caller's list), and it is a no-op when the file has no Species column or the map is empty. **Wired into BOTH paths, and both are needed:** `webapp/app.py` right after `read_upload_sheet` (so the split, the routing AND the Species value stored in CDD all agree), and `check_cdd_commit.load_units` after `read_file` — without the second one, post-commit verification would compare the file's `FBS` against CDD's `10%FBS` and report a false mismatch. Config over code: add a new CRO spelling to `species_aliases:`, never to the Python. Verified end-to-end on a synthetic 7-row PPB file: Mouse/Human/Monkey/Dog/Rat pass through untouched, and `FBS` + ` fbs ` collapse into ONE `10%FBS` unit routed to 135303. 8 new unit tests (43 total, all pass); real-file regression unchanged (PPB→Mouse, PPB→10%FBS, MMS→Human+Mouse, LogD→single).
+- **Species matching made CANONICAL (2026-09-17, after a webapp screenshot):** a real PPB file produced FOUR units — `FBS`(6), `mouse`(2), `Mouse`(102), `10%FBS`(4) — because the CRO mixes spellings AND casing in one file. New **`convert_upload.species_alias_map(config)`** folds two sources into one lookup: every protocol block's own `species:` value (keyed lowercase, mapping to itself) PLUS the `species_aliases:` short forms. Both call sites now pass this map instead of the raw alias dict. Result on that file: 4 units → **2** (`Mouse` 104 rows → 125963, `10%FBS` 10 rows → 135303). So `species_aliases:` only needs the ODD spellings; case variants are handled for free. An unknown species (e.g. 'Hamster') is deliberately left untouched so it surfaces for manual review instead of being mis-routed. 6 more tests (49 total). **CAUTION — merging changes dup-guard granularity:** the 2 `mouse` rows were previously their own unit and were flagged `already-uploaded`; inside the merged 104-row unit they will re-upload, because the guard works per unit, not per row. **Two things block a green 10%FBS row, both outside the code:** (1) the webapp loads config + modules ONCE at startup, so it MUST be restarted after any of this; (2) `_importable_protocols()` (app.py:73) and `ready` (app.py:149) both require a non-empty `mapping_template`, so the five new PPB protocols are correctly hidden from the dropdown and cannot go READY until their CDD templates exist. That guard is right — do not weaken it to make the row green.
 - **Local-only data policy (hard rule):** chemistry (SMILES/InChI/structures/compound names like `SRB-XXXXXXX`) never leaves the machine and never hits script stdout. Scripts print metadata only — counts, status codes, field names, numeric ids. Files on disk are the only place chemistry lands. See CLAUDE.md. Assistant must not `Read` structure files or echo notebook outputs.
 - **`get_df(collections=[])` = fetch ALL collections** (empty list, not `None`). CLI equivalent `--all-collections`. `collections=None` still errors. _[2026-06-26]_
 - **Import file is streamed, never read:** `import_to_protocol.py` hands CDD a binary file handle; the script (and assistant) never parse data rows. `--check-mapping` reads the **header row only** (column names = schema = allowed), never values.

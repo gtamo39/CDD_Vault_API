@@ -50,6 +50,8 @@ function statusCell(u){
     tag.className = "tag ok"; tag.textContent = "ready";
   } else if (u.status === "already-uploaded"){
     tag.className = "tag amber"; tag.textContent = "already uploaded";
+  } else if (u.status === "unknown-batches"){
+    tag.className = "tag err"; tag.textContent = "unknown batch id";
   } else if (u.status === "error"){
     tag.className = "tag err"; tag.textContent = "error";
   } else {
@@ -60,6 +62,11 @@ function statusCell(u){
   const notes = [];
   if (u.status === "already-uploaded") notes.push("identical data already in CDD — will be skipped");
   if (u.status === "error") notes.push(u.protocol_name || "no Upload tab");
+  if (u.unknown_batches && u.unknown_batches.length){
+    const n = u.unknown_batches.length, ex = u.unknown_batches.slice(0, 3).join(", ");
+    notes.push(n + " batch id(s) not in CDD — CDD would reject the whole file: " + ex +
+               (n > 3 ? ", …" : "") + ". A molecule id needs its batch suffix (e.g. -001).");
+  }
   if (u.unmapped && u.unmapped.length) notes.push("unmapped: " + u.unmapped.join(", "));
   if (u.missing && u.missing.length) notes.push("missing: " + u.missing.join(", "));
   if (u.dropped_blank_id) notes.push(u.dropped_blank_id + " blank-id rows dropped");

@@ -17,10 +17,24 @@ notifications:
   enabled: true
   on_commit: true              # email when a slurp reaches "committed"
   recipient: gtamo@seracbio.com    # who receives the notification
-  sender: auto@seracbio.com        # dedicated service mailbox (SMTP AUTH enabled)
+  sender: auto@seracbio.com        # dedicated service mailbox the app sends AS
+  # `graph` = Microsoft Graph with OAuth2 app-only auth. Microsoft disables SMTP
+  # basic auth by default on M365 tenants, so `smtp` below no longer works here.
+  transport: graph
+  tenant_id: ""                    # TODO from IT (Azure AD app registration)
+  client_id: ""                    # TODO from IT
+  client_secret_file: ~/.auto_graph   # holds the app secret (chmod 600, never in config)
+  # --- legacy SMTP transport, kept for reference; blocked by tenant policy ---
   smtp_host: smtp.office365.com
   smtp_port: 587
   password_file: ~/.auto_smtp      # holds auto@seracbio.com's password (chmod 600)
+
+# Extra Species spellings the CRO uses. Each key is the raw cell value, and each
+# value is the `species:` string the protocol blocks route on. The match ignores
+# case and outer spaces, and every protocol's own `species:` value already matches
+# case-insensitively ('mouse' routes as 'Mouse'), so list only the ODD spellings.
+species_aliases:
+  FBS: "10%FBS"
 
 protocols:
 
@@ -117,11 +131,21 @@ protocols:
       "Comment": 1074003
 
   125963:
-    name: Plasma protein binding (UC)
+    name: ppp UC (mouse)          # CDD renamed it 2026-09; "Ppp" is CDD's typo for ppb
     alias: ppb
     label: mouse ppb
     project: FBXO31
     mapping_template: "PPB_GT"    # rebuilt 2026-07-07 from the new WuXi layout
+    # Species value (in the file's Species column) that routes to this protocol.
+    species: Mouse
+    # Applied to every upload before submit, so a RAW WuXi file imports the same
+    # as a hand-corrected one. Empty/NA cells get filled, then values are rounded.
+    corrections:
+      fill_na:
+        "%Unbound": 0
+        "%Bound": 100
+      round_to:
+        1: ["%Unbound", "%Bound", "%Remaining"]
     identifiers:
       batch_id: "Molecule-Batch ID"
     ignore:
@@ -136,6 +160,163 @@ protocols:
       "Provider Comment": 1773620
       "Provider Name": 1773621
       "Comment": 1773622
+
+  # --- Plasma protein binding UC, split by species/matrix from the PPB file ---
+  # All six PPB blocks carry one identical column set, so a file ties on columns
+  # alone. The `species:` value routes each row to its protocol, and it must match
+  # the file's Species cell EXACTLY (WuXi writes `10%FBS`, with no space).
+  # Mouse stays on 125963 above: CDD has no `ppb UC (Mouse)` protocol.
+  # CDD readout `Serac Comment` receives the file's `Comment` column (same as 125963).
+
+  135299:
+    name: ppb UC (Human)
+    alias: ppb_human
+    label: human ppb
+    project: FBXO31
+    mapping_template: "PPB_HUMAN_GT"   # built 2026-09-17 from the 1-row template CSV
+    species: Human
+    # Applied to every upload before submit, so a RAW WuXi file imports the same
+    # as a hand-corrected one. Empty/NA cells get filled, then values are rounded.
+    corrections:
+      fill_na:
+        "%Unbound": 0
+        "%Bound": 100
+      round_to:
+        1: ["%Unbound", "%Bound", "%Remaining"]
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1964881
+      "Date": 1964882
+      "Species": 1964883
+      "%Unbound": 1964884
+      "%Bound": 1964885
+      "%Remaining": 1964889
+      "Provider Comment": 1964886
+      "Provider Name": 1964887
+      "Comment": 1964888
+
+  135300:
+    name: ppb UC (Monkey)
+    alias: ppb_monkey
+    label: monkey ppb
+    project: FBXO31
+    mapping_template: "PPB_MONKEY_GT"   # built 2026-09-17 from the 1-row template CSV
+    species: Monkey
+    # Applied to every upload before submit, so a RAW WuXi file imports the same
+    # as a hand-corrected one. Empty/NA cells get filled, then values are rounded.
+    corrections:
+      fill_na:
+        "%Unbound": 0
+        "%Bound": 100
+      round_to:
+        1: ["%Unbound", "%Bound", "%Remaining"]
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1964890
+      "Date": 1964891
+      "Species": 1964892
+      "%Unbound": 1964893
+      "%Bound": 1964894
+      "%Remaining": 1964898
+      "Provider Comment": 1964895
+      "Provider Name": 1964896
+      "Comment": 1964897
+
+  135301:
+    name: ppb UC (Dog)
+    alias: ppb_dog
+    label: dog ppb
+    project: FBXO31
+    mapping_template: "PPB_DOG_GT"   # built 2026-09-17 from the 1-row template CSV
+    species: Dog
+    # Applied to every upload before submit, so a RAW WuXi file imports the same
+    # as a hand-corrected one. Empty/NA cells get filled, then values are rounded.
+    corrections:
+      fill_na:
+        "%Unbound": 0
+        "%Bound": 100
+      round_to:
+        1: ["%Unbound", "%Bound", "%Remaining"]
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1964899
+      "Date": 1964900
+      "Species": 1964901
+      "%Unbound": 1964902
+      "%Bound": 1964903
+      "%Remaining": 1964907
+      "Provider Comment": 1964904
+      "Provider Name": 1964905
+      "Comment": 1964906
+
+  135302:
+    name: ppb UC (Rat)
+    alias: ppb_rat
+    label: rat ppb
+    project: FBXO31
+    mapping_template: "PPB_RAT_GT"   # built 2026-09-17 from the 1-row template CSV
+    species: Rat
+    # Applied to every upload before submit, so a RAW WuXi file imports the same
+    # as a hand-corrected one. Empty/NA cells get filled, then values are rounded.
+    corrections:
+      fill_na:
+        "%Unbound": 0
+        "%Bound": 100
+      round_to:
+        1: ["%Unbound", "%Bound", "%Remaining"]
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1964908
+      "Date": 1964909
+      "Species": 1964910
+      "%Unbound": 1964911
+      "%Bound": 1964912
+      "%Remaining": 1964916
+      "Provider Comment": 1964913
+      "Provider Name": 1964914
+      "Comment": 1964915
+
+  135303:
+    name: ppb UC (10% FBS)
+    alias: ppb_fbs
+    label: 10%FBS ppb
+    project: FBXO31
+    mapping_template: "PPB_10%FBS_GT"   # built 2026-09-17 from the 1-row template CSV
+    species: 10%FBS
+    # Applied to every upload before submit, so a RAW WuXi file imports the same
+    # as a hand-corrected one. Empty/NA cells get filled, then values are rounded.
+    corrections:
+      fill_na:
+        "%Unbound": 0
+        "%Bound": 100
+      round_to:
+        1: ["%Unbound", "%Bound", "%Remaining"]
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1964917
+      "Date": 1964918
+      "Species": 1964919
+      "%Unbound": 1964920
+      "%Bound": 1964921
+      "%Remaining": 1964925
+      "Provider Comment": 1964922
+      "Provider Name": 1964923
+      "Comment": 1964924
 
   # --- Microsomal stability (split by species from the MMS file) ---
   # Feed the per-species files from split_species.py:

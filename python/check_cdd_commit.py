@@ -128,6 +128,29 @@ def cell_value(c):
     return v
 
 
+def missing_batches(session, vault, mbids, cache=None):
+    """Which of `mbids` are NOT registered as batches in the vault.
+
+    CAUTION: `GET /batches?molecule_batch_identifier=` is a PREFIX match, not an
+    exact one (querying 'SRB' returns every batch), so the returned identifier is
+    compared for EQUALITY. Trusting the result count reports everything as present.
+
+    Returns a sorted list of the missing ids. `cache` (a dict) is reused across
+    units so one id is looked up once per request.
+    """
+    cache = cache if cache is not None else {}
+    missing = []
+    for mbid in sorted({str(m).strip() for m in mbids if str(m).strip()}):
+        if mbid not in cache:
+            r = get_with_retry(session, f"{API_BASE}/vaults/{vault}/batches",
+                               params={"molecule_batch_identifier": mbid, "page_size": 50})
+            objs = r.json().get("objects", []) if r is not None else []
+            cache[mbid] = any(o.get("molecule_batch_identifier") == mbid for o in objs)
+        if not cache[mbid]:
+            missing.append(mbid)
+    return missing
+
+
 def cdd_lookup(session, vault, pid, page_size=1000):
     """{molecule_batch_identifier -> [ {str(rid): value}, ... ]} — ALL runs per
     batch (a compound can have several); a file row matches if ANY run matches."""
@@ -225,6 +248,7 @@ def _unit(parent, species, pid, header, rows, config):
     block = (config.get("protocols") or {}).get(pid) or {}
     h2, _ = cu.reconcile_identifier(header, block)
     r2, _ = cu.drop_blank_identifier_rows(h2, rows, block)
+    r2, _ = cu.apply_corrections(h2, r2, block)
     return {"parent": parent, "species": species, "pid": pid, "header": h2, "rows": r2}
 
 
@@ -233,6 +257,7 @@ def load_units(path, config, force_pid=None):
     split microsomal by species, reconcile identifier, drop blank-id rows."""
     name = Path(path).name
     header, rows = read_file(path)
+    rows = cu.normalize_species(header, rows, cu.species_alias_map(config))
     if force_pid is not None:
         return [_unit(name, None, force_pid, header, rows, config)]
     det = dp.detect(header, config)
