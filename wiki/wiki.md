@@ -1,9 +1,9 @@
 # CDD_Vault_API — project wiki
-_Updated: 2026-09-17. Durable, aggregate memory of this repo — read at session start. Aggregate only: no SMILES / compound IDs / per-compound values._
+_Updated: 2026-10-29. Durable, aggregate memory of this repo — read at session start. Aggregate only: no SMILES / compound IDs / per-compound values._
 
 ## Where we are now
 - **Purpose:** local-only tooling around the CDD Vault REST API (vault **7108**) — export collections, download structure PNGs, bulk-import assay data into protocols, and reshape CRO data for upload.
-- **Current state (2026-09-17):** all WuXi protocols import end-to-end. **PPB is now split across 6 species protocols** (mouse 125963 + Human/Monkey/Dog/Rat/10%FBS 135299-135303), each with its own `*_GT` mapping template, and value corrections (NA fills + 1-decimal rounding) now run AUTOMATICALLY from config on every upload. Drag-drop webapp is the primary import path. Email transport is still **blocked** (tenant SMTP AUTH disabled — awaiting IT). Env is conda `cdd` (Py 3.12).
+- **Current state (2026-10-29):** all WuXi protocols import end-to-end. **Microsomal stability is now a 3-species split** (human 88861 / mouse 88862 / **rat 111161, new 2026-10-29**) — rat went live 2026-10-29 with its own `RLM_GT` template, so all **12** importable protocols now have one. **PPB is now split across 6 species protocols** (mouse 125963 + Human/Monkey/Dog/Rat/10%FBS 135299-135303), each with its own `*_GT` mapping template, and value corrections (NA fills + 1-decimal rounding) now run AUTOMATICALLY from config on every upload. Drag-drop webapp is the primary import path. Email transport is now **Microsoft Graph** (code built + tested 2026-09-18); it stays **inactive** until IT supplies an app registration's tenant id / client id / client secret — `~/.auto_graph` does not exist yet. Env is conda `cdd` (Py 3.12).
 - **MDR1 protocol import works end-to-end (2026-06-26):** slurp 3460913 → `committed`, 2/2 records. Full Slurps flow proven (POST→`id`, poll→`state`, `committed`).
 - **Scripts** (those that hit CDD share auth: `X-CDD-Token` header, token from `~/.cdd_token`, base `https://app.collaborativedrug.com/api/v1`):
   - `python/get_library.py` — export collections → CSV / SDF / `pandas.DataFrame` (`get_df`).
@@ -578,6 +578,472 @@ which of the three is missing.
 for the sender mailbox, client-credentials grant + `.default` scope, Bearer header, HTML preferred over text,
 text fallback, multi-recipient split, and soft-fail on both a 403 send and a 401 token. 69 tests total.
 
+## Rat microsomal stability (RLM, PID 111161) configured for import (2026-10-29)
+
+**Trigger:** WuXi sent `data/uploads/20261029/2026_08_26_MMS_433706-2026080702-MMS_v1_Report_0 update.xlsx`
+— 1 Upload row, `species` = **Rat**. 111161 was an **extraction-only** block (alias + PID only), so the
+file had nowhere to go.
+
+**Finding — rat and mouse are STRUCTURALLY IDENTICAL.** `--describe-protocol` on 111161 vs 88862 returns
+the same 10 readouts, same names, same data types, in the same order. Only the readout **ids** differ:
+
+| Readout (CDD name) | Type | mouse 88862 | rat 111161 |
+|---|---|---|---|
+| Study number | Text | 1113188 | 1476621 |
+| Date | Text | 1113189 | 1476622 |
+| Species | PickList | 1113190 | 1476623 |
+| T½ | Number | 1113191 | 1476624 |
+| CLint (raw) | Number | 1113192 | 1476625 |
+| Remaining (T=60min) | Number | 1113193 | 1476626 |
+| Remaining (No co factor=60min) | Number | 1113194 | 1476627 |
+| Provider Comment | Text | 1113195 | 1476628 |
+| Serac Comment | Text | 1113196 | 1476629 |
+| Provider Name | Text | 1113197 | 1476630 |
+
+The config block is therefore a straight copy of the mouse block with the rat ids, `alias: rlm`,
+`label: RLM`, `species: Rat`. Config keys stay the **file's** column spellings (`species`, `T½ (min)`,
+`CLint (raw) (μL/min/mg)`, `Comment`), exactly as in the mouse block — CDD's own names differ and that is
+fine, the id is what binds. The file column set matches too: 11 columns, same names, no `Run Lab`.
+
+**Species picklist on 111161 holds exactly one value, `Rat`** — so a mouse or human row sent there would
+be rejected. The file's only species value is `Rat`. Good.
+
+**Detection now returns a 3-WAY species group.** `detect_protocol.py` scores 88861 / 88862 / 111161 all at
+recall 1.00 / precision 1.00 — identical readouts cannot be told apart by columns. The tie resolves on the
+`species:` field exactly as the 2-way human/mouse case already did, with no code change:
+`species_pids={'Human': 88861, 'Mouse': 88862, 'Rat': 111161}`.
+
+**Pre-flight, all green (metadata only):** 4 Number columns carry 0 non-numeric tokens (no literal `NA`, so
+**no `corrections:` block is needed** — unlike PPB); batch-id format `1/1`; `missing_batches` → `0` missing
+in CDD; the real import path (`read_upload_sheet` → `normalize_species` → `split_species` →
+`reconcile_identifier` → `drop_blank_identifier_rows` → `apply_corrections`) maps **11/11 columns**,
+nothing unmapped, nothing missing.
+
+**`RLM_GT` BUILT AND LIVE (2026-10-29).** The template did not exist (none of the vault's 75 was a rat
+one), so `mapping_template:` was held commented out on purpose — naming a template that does not exist
+makes the webapp show the unit READY and then fail at CDD with HTTP 422. The one-row-CSV recipe above was
+used: `data/uploads/20261029/2026_10_29_MMS_Rat_template_1row.csv` (UTF-8-BOM, 11 columns, 9 of 11
+populated — the 2 blanks are `Provider Comment` and `Comment`, free text, same as PPB). The operator
+uploaded it and saved `RLM_GT`; config now carries `mapping_template: "RLM_GT"`. **111161 is fully
+importable.** All 12 importable protocols now have a template. Restart the webapp to pick it up.
+
+**No duplicate-commit CAUTION this time.** The source report holds exactly ONE row, so the template row
+*is* the whole dataset — building the template commits the only measurement we want anyway. Nothing to
+delete afterwards. **CORRECTED 2026-10-29:** this section first said 111161 held "5 runs, all with 0 rows"
+and that "no rat data has ever been committed". **Both were wrong** — an artifact of reading `readout_rows`
+off the runs endpoint, which never expands it (see the method CAUTION below). 111161 actually held **39
+rows** already and has **no empty runs**. Re-checked after the upload: **40 rows across 40 distinct
+batches — one row per compound, no duplicate.** The compound we uploaded was genuinely new to the
+protocol, so the wrong claim caused no harm, but the method was unsound.
+
+**The same filename already sits in `data/uploads/20260917/reports_with_no_issues/` — it is NOT the same
+file.** Different md5. Diffed column-by-column: the ONLY difference is `Molecule-Batch ID`. The old copy
+has the **truncated** id (format check 0/1, missing in CDD 1/1); the new copy is correct (1/1, 0 missing).
+So the 2026-10-29 file is **WuXi's fix of the truncated-batch-id defect** from 2026-09-17, and it
+supersedes the older copy. **Use the 20261029 copy; never upload the 20260917 one.**
+
+**Bug fixed in `--check-mapping` (xlsx path).** `read_header()` read the workbook's **active sheet** and
+skipped the OOXML unescape, so the diagnostic disagreed with the importer: it reported 3 false UNMAPPED
+columns (`CLint (raw)_x000D_\n(μL/min/mg)` etc.) for the rat file, and read a 1-column `Summary Report`
+tab for an older mouse file. It now calls `convert_upload.read_upload_sheet` — the same reader the import
+uses — and falls back to the active sheet only when the workbook has no `Upload` tab. CSV path unchanged.
+`--check-mapping --protocol 111161` now returns `mapped=11, mapping_ok=True`. All **69 tests still pass**.
+
+## CRO checker needed NO logic change for rat — only a label (2026-10-29)
+
+**Question asked:** does `static/verify_file.html` need updating now that rat MMS is importable?
+
+**Answer: no logic change.** The checker validates **column names**, not species, and human / mouse / rat
+MMS ship an identical column set. Run against the real rat report the unchanged checker already returned
+**7/7 pass**: Upload sheet, assay detected at 100% of columns, identifier present, full batch ids,
+all endpoint columns present, no extra columns, numeric columns numeric.
+
+**Independent confirmation of the batch-id guard.** Run against the SUPERSEDED 2026-09-17 copy of the same
+report, the checker **failed it** with the right message — "1 value(s) are a MOLECULE id with no batch
+suffix — add the trailing -001". So the guard added on 2026-09-17 would have caught the defect at WuXi's
+desk before the file was ever sent. First real-world confirmation that the guard works on a true positive.
+
+**One cosmetic fix made.** The MMS entry read `name:"Microsomal stability (Human + Mouse)"`, so a rat file
+passed but displayed as "Human + Mouse" — WuXi could read that as a mis-detection and report a false
+problem. Renamed to **"Microsomal stability (Human / Mouse / Rat)"**. The in-page spec list renders from
+`PROTOCOLS`, so it picked the new name up automatically. Nothing else changed; re-audited after the edit:
+still **zero** "CDD", the only two "Serac" strings are the literal MDR1 column names `Serac Comment` /
+`Serac Comment - PgP inhibitor` (renaming them would break validation), **zero** network primitives,
+no storage, 23,779 bytes. Still safe to share. **Re-send this build to WuXi.**
+
+**CAUTION — the scratch test harness goes stale silently.** `verify_core.mjs` is a COPY of the HTML's
+script block (lines 115-329, the pure-logic part; 330+ is DOM). The copy on disk predated the numeric-column
+and batch-id guards, so it would have "passed" a test of code that is not what we ship. **Always regenerate
+it from the HTML before trusting a run:**
+`{ sed -n '115,329p' static/verify_file.html; echo 'export { readXlsx, analyze, norm, scoreAll, PROTOCOLS };'; } > verify_core.mjs`
+Then `node test_verify.mjs` (9 real files in `data/uploads/20260914`). **A stale EXPECT entry was also
+found and corrected:** the MDR1 file was recorded as `verdict:"pass"` from before the numeric check
+existed, but it carries the literal `NA` in `Efflux ratio - PgP inhibitor` that the check was added for —
+the correct expectation is `fail`. After both fixes: **ALL 9 FILES MATCH EXPECTATIONS.**
+
+## CANONICAL microsomal-stability readout spec — use it to create Monkey + Dog (2026-10-29)
+
+**Trigger:** `data/uploads/20261029/2026_10_25_MMS_433706-2026100701-MMS_2_report_0.xlsx` — 11 columns,
+2 rows, species **Dog** and **Monkey**. Neither protocol exists in the vault (checked all 50: only
+`ppb UC (Monkey)` 135300 and `ppb UC (Dog)` 135301, which are PPB, not microsomal). They must be created.
+
+**Verified: human 88861, mouse 88862 and rat 111161 are IDENTICAL** — not just the names and types, but
+`unit_label`, `precision_type`, `precision_number` and `required` as well. Compared field-by-field via the
+API. Only the readout **ids** and the **Species picklist** differ per protocol. **One cosmetic nuance:**
+human lists the two `Remaining …` readouts at positions 9-10 instead of 6-7. Display order only — a
+mapping template binds column → readout **id**, never position — so it does not affect import.
+
+**The canonical spec (copy it exactly for Monkey and Dog):**
+
+| # | Readout name | Type | Unit | Precision | Required |
+|---|---|---|---|---|---|
+| 1 | Study number | Text | — | — | yes |
+| 2 | Date | Text | — | — | yes |
+| 3 | Species | PickList | — | — | yes |
+| 4 | T½ | Number | `min` | 3 | yes |
+| 5 | CLint (raw) | Number | `μL/min/mg` | 3 | yes |
+| 6 | Remaining (T=60min) | Number | `%` | 3 significant figures | yes |
+| 7 | Remaining (No co factor=60min) | Number | `%` | 3 significant figures | yes |
+| 8 | Provider Comment | Text | — | — | no |
+| 9 | Serac Comment | Text | — | — | no |
+| 10 | Provider Name | Text | — | — | yes |
+
+**CAUTION — the Species picklist holds ONE value per protocol.** Rat's holds only `Rat`, mouse's only
+`Mouse`. Give the Monkey protocol only `Monkey` and the Dog protocol only `Dog`. A row of the wrong
+species sent there is rejected, which is the safety property that makes the species split trustworthy.
+
+**CDD readout names are NOT the file's column names, and that is correct.** The file ships `T½ (min)` and
+`CLint (raw) (μL/min/mg)` (unit in the header); CDD carries the unit in `unit_label`, so the readout is
+just `T½`. The file's `Comment` maps to CDD's `Serac Comment`, and the file's `species` is lowercase.
+Config keys are always the **file's** spelling; the readout **id** is what binds. Same pattern as the
+other three.
+
+**Pre-flight of the Dog/Monkey file, all green:** column names **byte-identical** to the rat file and to
+all three config blocks; 4 Number columns hold 0 non-numeric tokens (no `corrections:` block needed);
+batch-id format 2/2; `missing_batches` → 0; the only blank cells are `Provider Comment` and `Comment`,
+both optional. The CRO checker passes it 7/7.
+
+**Until the protocols exist the webapp is SAFE but cannot route them.** `detect_protocol` returns
+`species_group` with `species_pids={'Human','Mouse','Rat'}`; Dog and Monkey find no pid (app.py:272), so
+those units fall through to the dropdown as `needs-selection` and Submit stays disabled. No mis-routing is
+possible — nothing to guard against, just nothing to pick yet.
+
+**Split per species, ready to upload (2026-10-29):** the source report was split in memory through the
+same path the webapp uses (`read_upload_sheet` -> `normalize_species` -> `reconcile_identifier` ->
+`split_species` -> `drop_blank_identifier_rows` -> `write_csv`), giving
+`..._MMS_2_report_0_Dog_upl.csv` and `..._MMS_2_report_0_Monkey_upl.csv` in `data/uploads/20261029/`
+(`<base>_<species>_upl.csv`, the `split_species.py` convention). Each is UTF-8-BOM, 11 columns, 1 row,
+9 of 11 populated, header identical to the source; 2 split rows account for 2 source rows with no loss.
+No identifier rename was needed (MMS keeps `Molecule-Batch ID`; only MDR1 renames). The rat block stood in
+for the conversion because the Dog/Monkey blocks do not exist yet — the script **asserts** all three MMS
+blocks share one identifier, one column set and no `corrections:` before relying on that.
+**Because each species has exactly 1 row, each CSV is both the template seed and the full dataset** — build
+the template from it and nothing needs deleting afterwards, same as rat.
+
+**Remaining steps once the two protocols exist:** read back their readout ids
+(`--describe-protocol <pid>`), add two config blocks modelled on 111161 (`alias`/`label`, `species: Monkey`
+/ `species: Dog`), build one mapping template **per protocol** (never reuse — a template is bound to one
+protocol), then uncomment `mapping_template:` and restart the webapp. Suggested names `MKLM_GT` / `DLM_GT`,
+following `HLM_GT` / `MLM_GT` / `RLM_GT`.
+
+## GOTCHA — a COPIED protocol keeps the source's Species picklist (2026-10-29)
+
+**Symptom:** the first import into the new dog protocol **137630** `Microsomal stability species dog` was
+rejected with `Readout "Dog" rejected. Value must match readout definition pick list.`
+
+**Cause:** 137630 was created by copying the rat protocol, and the copy **carried rat's picklist value
+across**. Its `Species` readout held `['Rat']`, so the file's `Dog` matched nothing. Everything else was a
+perfect copy — names, types, `unit_label`, `precision_type`, `precision_number`, `required` and even the
+readout ORDER all match the canonical spec exactly. The picklist was the single defect.
+
+**Fix:** in the CDD UI, edit the `Species` readout definition on the new protocol and replace `Rat` with
+the right species. **This is safe** — picklist values are per-readout objects, not shared: rat's `Rat` is
+value id 306208 on readout 1476623, dog's `Rat` was id **401123** on readout 2015336. Editing one cannot
+reach the other. Verified via the API before recommending the edit.
+
+**EXPECT THE SAME ON MONKEY.** If the monkey protocol is also created by copying an existing one, its
+picklist will hold the source's species too. Set it to `Monkey` BEFORE the first import. Generally: after
+copying any protocol, check the picklist first — `--describe-protocol <pid>` does not print picklist
+values, so read it from the API (`GET /vaults/7108/protocols/<pid>` → `readout_definitions[].pick_list_values`).
+
+**No cleanup needed from the rejection.** The reject was clean — no partial data landed. (The "1 run with
+0 rows" reading came from the unreliable `readout_rows` field; after the picklist fix the SAME run 2268661
+holds the 1 expected row, so CDD populated the existing run rather than making a second one.)
+
+**Config block added for 137630** (`alias: dlm`, `label: DLM`, `species: Dog`, readout ids 2015334-2015343).
+`mapping_template:` stays **commented out** until `DLM_GT` is built — no microsomal dog template exists
+(the only dog/monkey templates in the vault are `PPB_DOG_GT` / `PPB_MONKEY_GT`, which are PPB). Detection
+now returns a **4-way** species group `{'Human': 88861, 'Mouse': 88862, 'Rat': 111161, 'Dog': 137630}`;
+`--check-mapping --protocol 137630` against the Dog CSV gives `mapped=11, mapping_ok=True`. 69 tests pass.
+
+## Microsomal stability is now a FIVE-species split — all live (2026-10-29)
+
+**Two new protocols, both importable:**
+
+| PID | Protocol | alias | label | species | template |
+|---|---|---|---|---|---|
+| 88861 | Microsomal stability species human | hlm | HLM | Human | `HLM_GT` |
+| 88862 | Microsomal stability species mouse | mlm | MLM | Mouse | `MLM_GT` |
+| 111161 | Microsomal stability species rat | rlm | RLM | Rat | `RLM_GT` |
+| **137630** | Microsomal stability species dog | **dlm** | DLM | Dog | **`DLM_GT`** (62108) |
+| **137631** | Microsomal stability species Monkey | **clm** | CLM | Monkey | **`CLM_GT`** (62110) |
+
+`clm` = cynomolgus, matching the operator's template name. Note 137631's CDD name capitalises
+**M**onkey where the other four are lowercase — cosmetic only, `name:` carries the exact CDD string.
+Detection now returns a **5-way** species group; 14 importable protocols, every one with a template,
+no duplicate aliases. 69 tests pass.
+
+**The Monkey picklist was correct on creation** (`[(401128, 'Monkey')]`) — the copied-picklist gotcha
+above was avoided. 137631 also matches the canonical spec exactly (names, types, units, precision, required).
+
+**VERIFIED: each template binds to its OWN protocol.** This is the check that matters most, because a
+template is bound to one protocol and `build_payload` never sends a protocol id — a mis-bound template
+silently writes to the wrong place. For all five: every readout id in the template belongs to that
+protocol, and every `protocol_name` in `header_mappings` is that protocol's name. **No cross-binding.**
+
+**Method note — `header_mappings` entries key on `definition`, not `object`.** A parser looking for
+`object` returns 0 mappings for every template, which reads as "unbound" when the template is in fact
+fine. The real shape is
+`{"header": {"id","name","position"}, "definition": {"id","name","data_type_name","protocol_name","type"}, "run_grouping": <run id>}`.
+Identifier columns carry `type: "InternalFieldDefinition::MoleculeBatchIdentifier"`; readouts carry
+`type: "ReadoutDefinition"` plus `protocol_name`.
+
+**Harmless difference found between templates:** `RLM_GT` stores the ORIGINAL multi-line header spellings
+(`CLint (raw)\r\n(μL/min/mg)`), while `DLM_GT` stores the collapsed single-line ones — i.e. RLM_GT was
+built from the raw xlsx and DLM_GT from the `_upl.csv`. The **readout id sets are identical**, and the rat
+import succeeded, so CDD matches these whitespace-insensitively. Either source works for template-building.
+
+**CRO checker label made species-agnostic.** `static/verify_file.html` now reads
+`"Microsomal stability (any species)"` instead of naming the species, so adding a sixth species never needs
+another edit to the file we ship to WuXi. Regression re-run after the change: **ALL 9 FILES MATCH
+EXPECTATIONS**, and the Dog/Monkey report passes 7/7.
+
+## Caco-2 (85977) configured — the LAST extraction-only block is gone (2026-10-29)
+
+**File:** `data/uploads/20261029/2026_10_27_Caco2_433706-2026092501-Caco2_v2_report.xlsx` — 13 columns,
+**24 rows**, no species column (single protocol, no split). 13 file columns = 12 readouts + 1 identifier.
+
+**CACO2_GT VERIFIED (template id 62111):** 13 header mappings, all 12 readout mappings target
+`Caco-2 permeability`, identifier on `Molecule-Batch ID`
+(`InternalFieldDefinition::MoleculeBatchIdentifier`), and the template's readout id set is **identical to
+the config block's**. Detection returns `single` pid=85977 at recall 1.00 / precision 1.00;
+`--check-mapping` gives `mapped=13, mapping_ok=True`. 15 importable protocols, **every one templated**,
+and `protocols:` now has **no extraction-only entries left**.
+
+**CAUTION — three config keys reproduce the CRO file's spelling, not CDD's.** Config keys always match the
+FILE; the readout **id** is what binds:
+
+| config key (= file column) | CDD readout name | id |
+|---|---|---|
+| `Mean %Soulution Recovery A to B` | Mean %Solution Recovery A to B | 1073987 |
+| `Efflux Ratio` | Efflux ratio | 1073986 |
+| `Comment` | Serac Comment | 1073990 |
+
+The first is a genuine **misspelling in WuXi's file** ("Soulution"). `CACO2_GT` carries the same
+misspelling, so if WuXi ever corrects it, **the config key AND the template must change together** — fixing
+one alone breaks the import. The old `Caco-2 template` (34168) has it too, so the typo is long-standing.
+Noted in a comment above the block. The template also stores `Mean  Papp` with a double space where the
+file has one; CDD matches whitespace-insensitively, so that one is harmless.
+
+**Pre-flight, all green:** 5 Number columns hold 0 non-numeric tokens (**no `corrections:` block needed**);
+batch-id format 24/24, all 24 unique, 0 missing in CDD; no readout is `required`, so the 24 blank
+`Provider Comment` / `Comment` cells are fine.
+
+**Upload CONFIRMED landed:** run **2268684** (2026-10-29) holds all **24 rows**; the protocol went 95 → 119
+rows. See the timing CAUTION below — the first read of this run showed 0 rows and `source_files: []`.
+
+## CAUTION — two ways to misread CDD state as "empty" (2026-10-29)
+
+Both of these produced WRONG conclusions in this session. Fixed claims are corrected in place above.
+
+**1. `readout_rows` is NEVER expanded on the runs endpoints.** `GET /runs?protocols=<pid>` and
+`GET /runs/<id>` both return `readout_rows: []` whether or not the run holds data, so
+`len(o["readout_rows"])` reads 0 for every run and makes a populated protocol look empty. **It made rat
+111161 (39 rows) look like "5 empty runs, no data ever committed".** The reliable count is
+`get_protocol_data.protocol_rows(session, vault, pid)` (`GET /protocols/<pid>/data`), grouped by each row's
+`run` key — note the key is **`run`** (an int), not `run_id`. The row shape is
+`{'id','run','batch','molecule','readouts'}`, where `batch` and `molecule` are **ints**, not objects. True
+empty runs = run ids with no row pointing at them.
+
+**2. An import is NOT instant — do not conclude "it did not land" from one read.** Caco-2 read 95 rows
+with its new run at 0 rows and `source_files: []`, then 119 rows with that same run holding 24 a short
+while later. A run created by the template wizard and a run whose import is still processing look
+identical on a single read. **Re-query before reporting a failure**, and compare against a protocol known
+to have committed.
+
+**Helper for both (`make_session` takes the TOKEN STRING, not a path):**
+`from get_library import make_session, load_token; s = make_session(load_token('~/.cdd_token'))`
+
+## CRO checker gained a Caco-2 entry — 6 assays now (2026-10-29)
+
+`static/verify_file.html` had no Caco-2 entry, so a Caco-2 report dropped on it detected nothing. Added
+`key:"Caco2"`, `name:"Caco-2 permeability"`, identifier `Molecule-Batch ID`, 12 readouts and the 5 numeric
+columns. `PROTOCOLS` is now MDR1, **Caco2**, LogD, TSY, PPB, MMS. The in-page spec list renders from
+`PROTOCOLS` generically, so the new assay and its 12 column chips appear with no further edit.
+
+**The checker reproduces WuXi's `Soulution` misspelling on purpose.** The checker states the contract the
+import actually enforces, and both `CACO2_GT` and the config key carry that spelling. Spelling it
+correctly here would tell WuXi to "fix" a column that our template would then reject. If the typo is ever
+cleaned up it must change in **three** places together: WuXi's report, `CACO2_GT`, and `config.yaml`.
+
+**Detection margins verified — MDR1 is NOT affected.** MDR1 and Caco-2 share 6 column names, so the risk
+was a Caco-2 entry stealing MDR1 files. Measured on the real reports:
+
+| file | winner | runner-up | margin |
+|---|---|---|---|
+| MDR1 report | **MDR1 1.00** | Caco2 0.50 | 0.50 |
+| Caco-2 report | **Caco2 1.00** | LogD 0.67 | 0.33 |
+
+`norm()` collapses whitespace but does **not** lowercase, so `Efflux Ratio` (Caco-2's file) and
+`Efflux ratio` (MDR1's) count as different columns — part of why the two separate cleanly. Both winners
+sit at recall 1.00 with the runner-up below the 0.6 `MIN_RECALL` floor or well clear of it.
+
+**Verified after the edit:** the Caco-2 report passes **7/7**; the 9-file regression still reports
+**ALL 9 FILES MATCH EXPECTATIONS** (MDR1 still detected correctly); still zero "CDD", the only two "Serac"
+strings are the literal MDR1 column names, zero network primitives, 24,323 bytes. **Re-send to WuXi** —
+this build now covers all six assays.
+
+**Regenerating the scratch core: the line range MOVED.** The pure-logic block is now lines **115-335**
+(`<script>` at 114, `async function inflate` at 336 starts the DOM half). Do not reuse the old
+`115,329` — it truncates mid-function and the import fails with `Invalid or unexpected token`. Find the
+bounds each time rather than hard-coding them: `grep -n "<script>\|^async function inflate" static/verify_file.html`.
+
+## HMS = HEPATOCYTE stability — an assay we have no protocol for (2026-10-29)
+
+**Symptom:** `data/uploads/20261029/2026_10_25_HMS_433706-2026100701-HMS_v4_report_0_corrected.xlsx`
+errors in the webapp, complaining about **PPB** readouts.
+
+**Root cause: HMS is hepatocyte stability, NOT microsomal stability**, and **no hepatocyte protocol exists
+in vault 7108** (all 50 checked — `MAO stability` and `HepG2 …` are different assays). There is no config
+block either, so the detector has nothing correct to match.
+
+**Why it lands on PPB.** 6 of PPB's 9 readouts are generic admin columns this file also carries —
+`Study number`, `Date`, `Species`, `Provider Comment`, `Provider Name`, `Comment` — giving recall
+**0.67**, above the `MIN_RECALL` floor of **0.6**. PPB blocks carry `species:`, so the tie becomes a
+species group and routes Dog → 135301 `ppb UC (Dog)`, Monkey → 135300 `ppb UC (Monkey)`. **Wrong assay
+entirely.** The reported errors per unit are:
+* UNMAPPED (would not import): `T½ (min)`, `Clint_hep (uL/min/10^6)`, `Clint_liver (mL/min/kg)`
+* MISSING (left blank): `%Unbound`, `%Bound`, `%Remaining`
+
+**The guard held — nothing could go wrong.** `mapping_ok=False` → status `needs-selection` → Submit stays
+disabled. The failure mode is a *confusing message*, not a bad upload. The CRO checker shows the same
+false match (`Detected assay — Plasma protein binding (UC) — 67%`), so WuXi would be misled the same way.
+
+**CAUTION — this is the generic-column trap.** Any CRO file for an unconfigured assay will match whatever
+protocol shares the most admin columns, because `Study number` / `Date` / `Species` / the three
+comment-and-name columns are common to EVERY WuXi layout. A 0.67 "match" with 3 unmapped columns means
+"no protocol for this assay", not "nearly right". When a file errors against a protocol that is obviously
+the wrong assay, check whether the assay exists at all **before** touching the mapping.
+
+**The file itself is clean** and ready once a protocol exists: 2 rows (1 Dog, 1 Monkey), 3 numeric columns
+with 0 non-numeric tokens, batch-id format 2/2, 0 missing in CDD, only the optional
+`Provider Comment` / `Comment` blank.
+
+**Spec to create the hepatocyte protocol** (10 file columns = 9 readouts + identifier, from the file):
+
+| # | Readout | Type | Unit |
+|---|---|---|---|
+| 1 | Study number | Text | — |
+| 2 | Date | Text | — |
+| 3 | Species | PickList | — |
+| 4 | T½ | Number | `min` |
+| 5 | Clint_hep | Number | `uL/min/10^6` |
+| 6 | Clint_liver | Number | `mL/min/kg` |
+| 7 | Provider Comment | Text | — |
+| 8 | Serac Comment | Text | — |
+| 9 | Provider Name | Text | — |
+
+**NOTE — `Species` is capital-S in the HMS file**, where the MMS files ship lowercase `species`. Config
+keys copy the FILE, so the hepatocyte block must use `"Species"`. (`split_species` lowercases the header
+for its own lookup, so the split itself works either way.)
+
+**Open decision: one protocol per species, or one protocol for all?** Every existing split in this vault
+is per-species (5 microsomal, 6 PPB), and a per-species picklist is what makes a wrong-species row get
+rejected. A single protocol with a multi-value picklist would also work for a brand-new assay with no
+history. Not decided — the operator chooses before creation.
+
+## TSY gained a redundant `Compound ID` column — fixed via `ignore:` (2026-10-29)
+
+**Symptom:** `data/uploads/20261029/2026_10_09_433706-2026092501-TSY_Report_Oct-08-2026.xlsx` errors in
+the webapp. **Operator's diagnosis was correct:** `Compound ID` is the single UNMAPPED column.
+
+Detection was never wrong (`single` pid=86015, recall 1.00) and all 8 readouts + the identifier matched.
+Only the extra column blocked the gate. **This is a WuXi format change** — all four earlier TSY reports
+on disk are 9 columns starting at `Molecule-Batch ID`, with no `Compound ID`.
+
+**Fix (generalised 2026-10-29): a top-level `ignore_columns:` list, folded into EVERY block.** First
+done as a TSY-only `ignore:` entry, then lifted to the top level because WuXi adds this column across
+reports, not just TSY → `mapped=9, ignored=['Compound ID'], mapping_ok=True`. Detection precision also
+rose to 0.90. This is the SAME shape as MDR1, which has ignored a redundant `Molecule Name` beside its
+batch id since the beginning — that one stays block-level, because only MDR1 ships it.
+
+**CAUTION — `ignore:` is VALIDATION-ONLY. It does not drop the column.** Nothing in `convert_upload.py`
+or `webapp/app.py` removes ignored columns; the staged CSV still carries `Compound ID`, and that file is
+what goes to CDD. `ignore:` only moves a column from "unmapped" to "ignored" so `evaluate_mapping`
+returns ok.
+
+**Does CDD accept the extra column? The MDR1 precedent says a template CAN skip one.** `MDCK-MDR1`'s
+header mappings run positions **1..27** — position 0 is absent, and position 0 in the MDR1 file is the
+ignored `Molecule Name`. That file imports successfully, so an unmapped extra column is not fatal in
+itself.
+
+**But `TSY_GT` was built from a 9-column file**, so its positions run 0..8 with `Molecule-Batch ID` at 0,
+while the new file has `Compound ID` at 0 and the identifier at 1. Whether CDD re-matches on header NAME
+(works) or validates the stored layout (422) is **not established** — no TSY file with this column has
+ever been imported. **If the upload returns HTTP 422 `"Provided mapping template does not match file."`,
+rebuild `TSY_GT` from this 10-column file leaving `Compound ID` unmapped** — which is exactly how
+`MDCK-MDR1` is built. The config change is needed either way.
+
+**The file is otherwise clean:** 2 rows, both solubility columns 0 non-numeric, batch-id format 2/2,
+0 missing in CDD, only the optional `Comment` blank.
+
+**The CRO checker already handles it correctly — left unchanged.** It returns `warn` (not `fail`) and
+names the column: *"Not recognised (will be ignored or rejected): Compound ID"*. That is the right signal:
+we would rather WuXi drop the redundant column than have the checker bless it. Adding `Compound ID` to the
+checker's TSY `ignore` would silence a warning we actually want.
+
+## Global `ignore_columns:` — one list for columns no protocol imports (2026-10-29)
+
+A column the CRO adds to every report should be declared once, not copied into 15 blocks. New top-level
+key in `config.yaml`, beside `species_aliases:`:
+
+```yaml
+ignore_columns:
+  - "Compound ID"     # redundant molecule id beside Molecule-Batch ID (2026-10-09)
+```
+
+**How it reaches everything: folded at CONFIG LOAD, not at each call site.** New
+`convert_upload.apply_global_ignores(config)` appends the global entries to every protocol's own
+`ignore:` (whitespace-insensitive, never duplicating one a block already lists) and is called at the
+**two** load points — `import_to_protocol.load_config` (CLI) and `webapp/app.py`'s module-level `CONFIG`.
+Everything downstream then reads a block whose `ignore:` is already complete, so **no function signature
+changed** and `detect_protocol`, `evaluate_mapping`, `check_mapping` and the webapp all pick it up for
+free. Block-level `ignore:` still works and is still right for a column only one assay ships — MDR1 keeps
+`Molecule Name` that way.
+
+**Detection is provably unaffected.** `_score_block` computes recall/precision from `readouts` and
+`identifiers` only — it never reads `ignore` — so folding columns in cannot move a detection score.
+Verified across all 15 real reports: every verdict unchanged.
+
+**CRO checker given the matching rule.** `static/verify_file.html` gained
+`const IGNORE_ALL = ["Run Lab", "Compound ID"];`, merged into the `allowed` set in `analyze`, and the
+rule text now reads "`Run Lab`, `Compound ID` and `Molecule Name` are allowed but ignored". The TSY
+report went `warn` → **pass**. This REVERSES the 2026-10-29 note above that argued for keeping the
+warning so WuXi would drop the column — the operator decided the column should not block, and the
+checker must state the same contract the import enforces.
+
+**CAUTION unchanged: this does NOT drop the column from the file.** `ignore:` is still validation-only.
+The staged CSV keeps `Compound ID` and CDD still receives it. **Do not "fix" that by dropping ignored
+columns at conversion time — it would break MDR1**, whose `MDCK-MDR1` template is built from a file that
+HAS the ignored `Molecule Name` at position 0 (its mappings run positions 1..27). Removing the column
+would change the layout the template was built against.
+
+**Verified:** 74 tests pass (5 new `ApplyGlobalIgnoresTests`); CLI `--check-mapping` and the webapp's own
+`CONFIG` both report `ok=True ignored=['Compound ID']`; all 15 real reports re-swept with no regression
+(only the HMS file still fails, for the unrelated missing-protocol reason); checker regression still
+**ALL 9 FILES MATCH EXPECTATIONS**; HTML re-audited — zero "CDD", two "Serac" (the MDR1 column names),
+zero network primitives, 24,509 bytes.
+
 ## Post-commit verification (check_cdd_commit.py, 2026-07-16)
 - **Purpose:** automate the manual "did it really upload?" check. For each committed workbook: detect protocol (+ species split) → fetch CDD protocol data → per compound, confirm a committed row EXISTS and numeric readout VALUES match. Webapp runs it automatically after commit (`POST /api/verify`) and flips rows + the Submit button to **azure "SUCCESS"** (`--azure #2f7bb5`); CLI returns SUCCESS/fail exit code.
 - **Match key (verified 2026-07-16):** file `Molecule-Batch ID` == CDD batch `molecule_batch_identifier`. Protocol-data rows carry `batch` as a **numeric id**, not the SRB string — map via `GET /vaults/{v}/batches?batches=id1,id2` → `molecule_batch_identifier`. (`molecule` and `run` are also numeric ids.)
@@ -617,7 +1083,7 @@ text fallback, multi-recipient split, and soft-fail on both a 403 send and a 401
 - **Stdout success/exit codes:** `import_to_protocol.py` exits 1 on failed mapping check or non-`committed` slurp; 0 on success.
 - **Email-on-commit notification (2026-07-09, opt-in):** `python/notify.py` sends a **metadata-only** email when a slurp reaches `committed` — body carries protocol name/PID, slurp id, file *basename*, record counts; NEVER SMILES/compound ids/row values (same hard rule). Config in the top-level `notifications:` block of `config.yaml` (`enabled`, `on_commit`, recipient/sender, `smtp_host`/`smtp_port`, `password_file`); the SMTP app password lives in `~/.cdd_smtp` (chmod 600, like `~/.cdd_token`), NOT in config. Stdlib `smtplib`+`ssl` (no new dep), STARTTLS to `smtp.office365.com:587`. Fires from both the CLI (after `report_outcome` when ok) and the webapp (`/api/status` on the committed transition, deduped via a `NOTIFIED` set; slurp→meta stored at submit in `SLURP_META`). **Sending never raises** — a bad mailbox/disabled SMTP logs a WARN and returns False, never breaks/rolls back the upload. Verify SMTP offline with `import_to_protocol.py --test-notification` (no token, no upload; ignores `on_commit`, still needs `enabled`+creds). Current settings: recipient=sender=`gtamo@seracbio.com`, commit-only (`on_failure` not implemented — only `on_commit`). **BLOCKED (2026-07-13):** `--test-notification` failed — `535 5.7.139 Authentication unsuccessful, SmtpClientAuthentication is disabled for the Tenant` (https://aka.ms/smtp_auth_disabled). seracbio's M365 tenant has SMTP AUTH (basic auth) disabled org-wide, so the app-password+SMTP path cannot work as-is. App password saved at `~/.MS_pwd.txt` (chmod 600, `password_file` points there). Unblock options: (a) IT enables SMTP AUTH for the one mailbox: `Set-CASMailbox -Identity gtamo@seracbio.com -SmtpClientAuthenticationDisabled $false` (per-mailbox override works even with org-level off) — zero code change; (b) IT provides an internal unauthenticated SMTP relay → point `smtp_host` at it, drop the login; (c) build the Microsoft Graph `sendMail` route (needs an Azure AD app registration + `Mail.Send` + admin consent — more setup). notify.py code + wiring are done and tested (graceful-fail confirmed); only the transport is blocked. **Update 2026-07-20:** IT created a dedicated service mailbox `auto@seracbio.com` (config now sends from it, recipient stays `gtamo@seracbio.com`, password in `~/.auto_smtp`). `--test-notification` STILL returns `535 5.7.139 … disabled for the Tenant` — because SMTP AUTH is off at the **org/tenant level**, so a new mailbox inherits "off". The missing step is the **per-mailbox override** on the service account: `Set-CASMailbox -Identity auto@seracbio.com -SmtpClientAuthenticationDisabled $false` (overrides the tenant default; allow up to ~60 min propagation). If Security Defaults/Conditional Access still block basic-auth SMTP after that, fall back to Graph. Error `5.7.139 disabled` = policy (not creds); `5.7.3 authentication failed` would = bad password/app-password needed. **Update 2 (2026-07-20):** after the per-mailbox override, the error MOVED to `535 5.7.139 … user is locked by your organization's security defaults policy` — i.e. SMTP AUTH is now enabled on `auto@` but **Security Defaults blocks all basic/legacy auth tenant-wide, and cannot exclude a single account**. So SMTP-with-password is a dead end on this tenant. Remaining paths: (1) **Microsoft Graph app-only** (OAuth2 client-credentials + `Mail.Send` application permission + admin consent; uses `requests`, no new dep; not blocked by Security Defaults — the recommended route, needs an Azure AD app registration: tenant id / client id / client secret from IT), or (2) an **internal unauthenticated SMTP relay** (point `smtp_host` at it, no login). **DECISION: waiting for IT to say which they can provide before building** (Graph sender not yet written).
 - **Per-compound summary table + team email (2026-07-13):** the webapp now shows a **per-compound rollup** below the file table — one row per compound batch id listing every assay label it appears in across the dropped files (labels from each protocol's new `label:` field in config; `_summary_rows()` in `app.py` aggregates from staged units' `conv_rows`, extracting ONLY the identifier column + label, never readout values). New endpoints: `GET /api/summary` (returns the rollup to the LOCAL browser) and `POST /api/email-summary` (emails it). When the submitted batch finishes committing, the frontend auto-POSTs `/api/email-summary` once (`emailSummary()`, guarded by `summaryEmailed`) → `notify.notify_compound_summary()` sends a multipart plain+HTML table. **AUTHORIZED POLICY OVERRIDE (data owner, 2026-07-13):** this team email intentionally **includes compound batch ids** (`SRB-…`) — an explicit, informed exception to the local-only rule for internal team distribution; still limited to batch ids + assay names, never SMILES/structures/measured values. `notify_committed` stays metadata-only; the webapp now sends the summary email instead of the per-slurp commit email (CLI still uses `notify_committed`). Verified end-to-end with the MMS file (4 compounds, assays `('HLM','MLM')`) — display + endpoints work; email still `sent:false` pending SMTP transport. Logic unit-tested with synthetic `TEST-…` ids (no real compound ids to stdout). Config gained `label:` for the 6 importable protocols (MDR1=`MDCK-MDR1 II (with and without inh)`, 85979=`LogD`, 86015=`therm sol 6.4`, 125963=`mouse ppb`, 88861=`HLM`, 88862=`MLM`). **Run-date column added (2026-07-13):** `_summary_rows()` also pulls the file's `Date`/`Run date` column (distinct values per compound) into `run_date`; shown as a middle column in the webapp table + email (Compound | Run date | Assays). Displayed verbatim from the cell (WuXi stores it as an int `YYYYMMDD`, so it shows e.g. `20260703`, unformatted). **Study number in the BROWSER rollup + CDD-vs-file comparison table (2026-08-28):** `_summary_rows()` returns `study_number` (from the file's `Study number` col) alongside batch_id/run_date/assays — rollup columns: Compound | Run date | Study number | Assays. Measured values are NOT in the rollup and NOT emailed (email renderers use only batch_id/run_date/assays; verified with sentinels). **`GET /api/compare`** renders the real CDD-vs-file side-by-side (the operator's actual intent, not file-only values): reuses `ccc.build_comparison` + `ccc.comparison_rows` → long-format rows (batch_id, cdd_compound_name, experiment, cdd_value, wuxi_value, match) for compounds already in CDD; browser-only (carries CDD + file values), never emailed. A separate "CDD vs file comparison" table shows it, DIFF rows highlighted (red), `ok` colored green (`td.ok-val`), and a double rule (`tr.group`) between compounds. Free-text columns are hidden from the comparison (`_IGNORE_COMPARE_COLS` = provider comment/provider name/comment/serac comment) in `comparison_rows` (affects both the webapp table and the `--compare` CSV). app.js cache-buster `?v=2026-08-28-4`. **Stale-STAGE fix:** `STAGE` is a global server dict that a browser refresh doesn't reset, so summary/compare double-counted a re-staged file (symptom: endpoint string repeated ` | ` identically). Added `POST /api/clear` (empties STAGE), called by the frontend on page load AND on Clear, so views reflect only the current batch. app.js cache-buster now `?v=2026-08-28-2` (hard-refresh once).
-- **Protocol data extraction (`get_protocol_data.py`, 2026-06-26):** selects assays by the config `alias:` field (mdck/logd/hlm/mlm/rlm/solubility/ppb/caco2); `--experiments` omitted → all aliased. Design (user-chosen): **one merged wide table**, one row per compound joined on molecule id, **latest run per compound** (max `run_date`, tie-break run id), readout columns prefixed by alias (`logd_LogD7.4`, `ppb_%Unbound`), molecule cols (`name`,`smiles`, configurable via `--mol-columns`) once. Aliases live in config; caco2 (85977) + rlm (111161) are **extraction-only blocks** (alias+PID+name, no import mapping yet). Chemistry only in the CSV/DataFrame; stdout = counts/columns.
+- **Protocol data extraction (`get_protocol_data.py`, 2026-06-26):** selects assays by the config `alias:` field (mdck/logd/hlm/mlm/rlm/solubility/ppb/caco2); `--experiments` omitted → all aliased. Design (user-chosen): **one merged wide table**, one row per compound joined on molecule id, **latest run per compound** (max `run_date`, tie-break run id), readout columns prefixed by alias (`logd_LogD7.4`, `ppb_%Unbound`), molecule cols (`name`,`smiles`, configurable via `--mol-columns`) once. Aliases live in config; caco2 (85977) is the last **extraction-only block** (alias+PID+name, no import mapping); rlm (111161) became importable 2026-10-29. Chemistry only in the CSV/DataFrame; stdout = counts/columns.
 
 ## Where things live
 - **Scripts:** `python/{get_library,download_cdd_structures,import_to_protocol,get_protocol_data,convert_dataset,split_species,convert_upload,detect_protocol,notify}.py`. Shared auth primitives (`load_token`, `make_session`, `API_BASE`, `get_with_retry`) live in `get_library.py` and are imported by `import_to_protocol.py` + `get_protocol_data.py`. `split_species.py`, `convert_upload.py`, `detect_protocol.py`, `notify.py` are offline (no CDD auth/network; `notify.py` does hit SMTP when enabled).

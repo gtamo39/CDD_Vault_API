@@ -36,6 +36,14 @@ notifications:
 species_aliases:
   FBS: "10%FBS"
 
+# Columns the CRO ships that NO protocol imports. Folded into every protocol's
+# own `ignore:` at config load, so a column WuXi adds across all reports is
+# listed once here instead of in each block. Match is whitespace-insensitive.
+# CAUTION: this only stops the column BLOCKING validation — the column is still
+# present in the file sent to CDD (see wiki: `ignore:` is validation-only).
+ignore_columns:
+  - "Compound ID"     # redundant molecule id beside Molecule-Batch ID (2026-10-09)
+
 protocols:
 
   131399:
@@ -322,6 +330,9 @@ protocols:
   # Feed the per-species files from split_species.py:
   #   ..._MMS_..._Human_upl.csv  -> 88861
   #   ..._MMS_..._Mouse_upl.csv  -> 88862
+  #   ..._MMS_..._Rat_upl.csv    -> 111161
+  #   ..._MMS_..._Dog_upl.csv    -> 137630
+  #   ..._MMS_..._Monkey_upl.csv -> 137631
   # Column names match whitespace-insensitively, so the multi-line headers
   # (e.g. "CLint (raw)\r\r\n(μL/min/mg)") match these clean keys.
   # `Comment` -> Serac Comment is an inference; confirm vs each template.
@@ -375,17 +386,103 @@ protocols:
       "Comment": 1113196
       "Provider Name": 1113197
 
-  # --- Extraction-only so far (no import mapping yet — no upload files) ---
-  # get_protocol_data reads readout names from the API, so only alias + PID are
-  # needed here. Add identifiers/ignore/readouts/mapping_template if/when these
-  # are imported to.
+  111161:
+    name: Microsomal stability species rat
+    alias: rlm
+    label: RLM
+    project: FBXO31
+    mapping_template: "RLM_GT"   # TODO build in the CDD UI from the 1-row template CSV
+    species: Rat
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1476621
+      "Date": 1476622
+      "species": 1476623
+      "T½ (min)": 1476624
+      "CLint (raw) (μL/min/mg)": 1476625
+      "Remaining (T=60min)": 1476626
+      "Remaining (No co factor=60min)": 1476627
+      "Provider Comment": 1476628
+      "Comment": 1476629
+      "Provider Name": 1476630
+
+  137630:
+    name: Microsomal stability species dog
+    alias: dlm
+    label: DLM
+    project: FBXO31
+    mapping_template: "DLM_GT"    # built 2026-10-29 from the Dog _upl.csv
+    species: Dog
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2015334
+      "Date": 2015335
+      "species": 2015336
+      "T½ (min)": 2015337
+      "CLint (raw) (μL/min/mg)": 2015338
+      "Remaining (T=60min)": 2015339
+      "Remaining (No co factor=60min)": 2015340
+      "Provider Comment": 2015341
+      "Comment": 2015342
+      "Provider Name": 2015343
+
+  137631:
+    name: Microsomal stability species Monkey
+    alias: clm
+    label: CLM
+    project: FBXO31
+    mapping_template: "CLM_GT"    # built 2026-10-29 from the Monkey _upl.csv
+    species: Monkey
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2015344
+      "Date": 2015345
+      "species": 2015346
+      "T½ (min)": 2015347
+      "CLint (raw) (μL/min/mg)": 2015348
+      "Remaining (T=60min)": 2015349
+      "Remaining (No co factor=60min)": 2015350
+      "Provider Comment": 2015351
+      "Comment": 2015352
+      "Provider Name": 2015353
+
+  # --- Caco-2 permeability (single protocol, no species split) ---
+  # CAUTION: three config keys reproduce the CRO file's spelling, NOT CDD's:
+  #   'Mean %Soulution Recovery A to B'  <- the file misspells "Solution"
+  #   'Efflux Ratio'                     <- CDD's readout is 'Efflux ratio'
+  #   'Comment'                          <- CDD's readout is 'Serac Comment'
+  # Config keys always match the FILE; the readout id is what binds. CACO2_GT
+  # carries the same misspelling, so fixing it needs BOTH changed together.
 
   85977:
     name: Caco-2 permeability
     alias: caco2
+    label: Caco-2
     project: FBXO31
-
-  111161:
-    name: Microsomal stability species rat
-    alias: rlm
-    project: FBXO31
+    mapping_template: "CACO2_GT"   # built 2026-10-29 (template id 62111)
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 1073361
+      "Date": 1073362
+      "Mean Papp (10-6 cm/s) A to B": 1073364
+      "Mean Papp (10-6 cm/s) B to A": 1073985
+      "Efflux Ratio": 1073986
+      "Mean %Soulution Recovery A to B": 1073987
+      "Mean %Solution Recovery B to A": 1073988
+      "Provider Comment": 1073989
+      "Comment": 1073990
+      "Permeability Class": 1073991
+      "Efflux Transporter Substrate": 1073992
+      "Provider Name": 1073993

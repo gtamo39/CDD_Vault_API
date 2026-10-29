@@ -136,7 +136,9 @@ def load_config(config_path):
     p = Path(config_path)
     if not p.exists():
         sys.exit(f"ERR: config not found: {p}")
-    return yaml.safe_load(p.read_text()) or {}
+    import convert_upload as cu
+
+    return cu.apply_global_ignores(yaml.safe_load(p.read_text()) or {})
 
 
 def load_protocol_mapping(config_path, pid):
@@ -157,8 +159,10 @@ def load_protocol_mapping(config_path, pid):
 def read_header(file_path):
     """Return the upload file's column names ONLY (schema, never data rows).
 
-    CSV: first row. XLSX: first row of the first sheet. The BOM some exporters
-    prepend to the first header cell is stripped.
+    CSV: first row. XLSX: the 'Upload' tab via convert_upload (same reader the
+    import itself uses, so the check agrees with it), falling back to the first
+    sheet when the workbook has no 'Upload' tab. The BOM some exporters prepend
+    to the first header cell is stripped.
     """
     p = Path(file_path)
     ext = p.suffix.lower()
@@ -166,11 +170,14 @@ def read_header(file_path):
         with open(p, newline="", encoding="utf-8-sig") as fh:
             header = next(csv.reader(fh), [])
     elif ext == ".xlsx":
-        from openpyxl import load_workbook
-        wb = load_workbook(p, read_only=True)
-        ws = wb.active
-        header = [c.value for c in next(ws.iter_rows(max_row=1))]
-        wb.close()
+        import convert_upload as cu
+        try:
+            header = cu.read_upload_sheet(p)[0]
+        except cu.UploadSheetError:
+            from openpyxl import load_workbook
+            wb = load_workbook(p, read_only=True)
+            header = [c.value for c in next(wb.active.iter_rows(max_row=1))]
+            wb.close()
     else:
         sys.exit(f"ERR: --check-mapping supports .csv/.xlsx, not {ext!r}")
     return [str(h).lstrip("﻿").strip() for h in header if h not in (None, "")]

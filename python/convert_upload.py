@@ -174,6 +174,28 @@ def species_alias_map(config):
     return out
 
 
+def apply_global_ignores(config):
+    """Fold the top-level `ignore_columns:` into every protocol block's `ignore:`.
+
+    A column the CRO adds to EVERY report (e.g. a redundant 'Compound ID' beside
+    the batch id) belongs in one top-level list, not copied into each block. Call
+    this once at config load; everything downstream then reads a block whose
+    `ignore:` is already complete, so no call site needs the global list.
+
+    Mutates and returns the config. Entries already in a block are not repeated.
+    """
+    extra = config.get("ignore_columns") or []
+    if not extra:
+        return config
+    for block in (config.get("protocols") or {}).values():
+        if not isinstance(block, dict):
+            continue
+        have = list(block.get("ignore") or [])
+        seen = {_norm(x) for x in have}
+        block["ignore"] = have + [c for c in extra if _norm(c) not in seen]
+    return config
+
+
 def normalize_species(header, rows, aliases):
     """Rewrite Species cells through an alias map (WuXi ships 'FBS' for '10%FBS').
 

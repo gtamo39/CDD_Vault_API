@@ -102,7 +102,7 @@
         <li><b>Include the batch suffix.</b> <code>SRB-0013325</code> is a <i>molecule</i> id and will be rejected; the value must be the full batch id, e.g. <code>SRB-0013325-001</code>. Every record in the file fails without it.</li>
         <li>Endpoint column names must match exactly (spelling, spacing, units, and the <code>- PgP inhibitor</code> suffixes are all significant).</li>
         <li>Numeric result columns must contain <b>numbers only</b>. Never write <code>NA</code>, <code>ND</code>, or any other text — <b>leave the cell empty instead</b>. The import rejects a row that has text in a numeric field. A <code>&lt;</code> or <code>&gt;</code> qualifier (e.g. <code>&lt;0.5</code>) is fine.</li>
-        <li><code>Run Lab</code> and <code>Molecule Name</code> are allowed but ignored. Any other unexpected column is flagged.</li>
+        <li><code>Run Lab</code>, <code>Compound ID</code> and <code>Molecule Name</code> are allowed but ignored. Any other unexpected column is flagged.</li>
       </ul>
     </div>
     <div id="specList"></div>
@@ -119,6 +119,8 @@
    ========================================================================== */
 const ID_UNPREFIXED = "Molecule-Batch ID";
 const ID_PREFIXED = "Batch Molecule-Batch ID";
+/* columns every report may carry that no endpoint imports — allowed, never flagged */
+const IGNORE_ALL = ["Run Lab", "Compound ID"];
 
 const PROTOCOLS = [
   { key:"MDR1", name:"MDR1-MDCK II permeability (± PgP inhibitor)", identifier:ID_PREFIXED,
@@ -135,6 +137,12 @@ const PROTOCOLS = [
       "Mean %Solution Recovery A to B","Mean %Solution Recovery B to A",
       "Mean Papp A to B - PgP Inhibitor","Mean Papp B to A - PgP inhibitor","Efflux ratio - PgP inhibitor",
       "Mean %Solution Recovery A to B - PgP inhibitor","Mean %Solution Recovery B to A - PgP inhibitor"] },
+  { key:"Caco2", name:"Caco-2 permeability", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Date","Mean Papp (10-6 cm/s) A to B","Mean Papp (10-6 cm/s) B to A",
+      "Efflux Ratio","Mean %Soulution Recovery A to B","Mean %Solution Recovery B to A",
+      "Provider Comment","Comment","Permeability Class","Efflux Transporter Substrate","Provider Name"],
+    numeric:["Mean Papp (10-6 cm/s) A to B","Mean Papp (10-6 cm/s) B to A","Efflux Ratio",
+      "Mean %Soulution Recovery A to B","Mean %Solution Recovery B to A"] },
   { key:"LogD", name:"LogD 7.4", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Study Date","LogD7.4 (Oct/buff) result","Provider Comment","Provider Name","Comment"],
     numeric:["LogD7.4 (Oct/buff) result"] },
@@ -145,7 +153,7 @@ const PROTOCOLS = [
   { key:"PPB", name:"Plasma protein binding (UC)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Date","Species","%Unbound","%Bound","%Remaining","Provider Comment","Provider Name","Comment"],
     numeric:["%Unbound","%Bound","%Remaining"] },
-  { key:"MMS", name:"Microsomal stability (Human + Mouse)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+  { key:"MMS", name:"Microsomal stability (any species)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Date","species","T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)",
       "Remaining (No co factor=60min)","Provider Comment","Comment","Provider Name"],
     numeric:["T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)","Remaining (No co factor=60min)"] },
@@ -302,7 +310,7 @@ function analyze(fileName, sheetNames, upload){
   const hset=new Set(header.map(norm));
   const missing=p.readouts.filter(r=>!hset.has(norm(r)));
   push("All expected endpoint columns present", missing.length?"fail":"pass", missing.length?"Missing: "+missing.join(", "):"");
-  const allowed=new Set([...p.readouts.map(norm),norm(p.identifier),norm(ID_UNPREFIXED),...p.ignore.map(norm)]);
+  const allowed=new Set([...p.readouts.map(norm),norm(p.identifier),norm(ID_UNPREFIXED),...p.ignore.map(norm),...IGNORE_ALL.map(norm)]);
   const extras=header.filter(h=>h && !allowed.has(norm(h)));
   push("No unexpected extra columns", extras.length?"warn":"pass",
     extras.length?"Not recognised (will be ignored or rejected): "+extras.join(", "):"");

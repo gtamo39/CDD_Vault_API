@@ -32,8 +32,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'python'))
 
-from convert_upload import (apply_corrections, normalize_species,
-                            species_alias_map, split_species)
+from convert_upload import (apply_corrections, apply_global_ignores,
+                            normalize_species, species_alias_map, split_species)
+from import_to_protocol import evaluate_mapping
 from convert_dataset import (
     check_columns_match,
     convert_to_target_format,
@@ -1052,6 +1053,62 @@ class GraphNotificationTests(unittest.TestCase):
         # e.g. admin consent not granted yet
         self.assertFalse(ok)
 
+
+
+class ApplyGlobalIgnoresTests(unittest.TestCase):
+    """convert_upload.apply_global_ignores — the top-level `ignore_columns:` list is
+    folded into every protocol's own `ignore:` at config load, so a column the CRO
+    adds to every report stops blocking validation without being copied per block."""
+
+    def test_global_column_is_added_to_every_block(self):
+        """Each protocol gains the global column alongside its own ignores."""
+        cfg = {
+            "ignore_columns": ["Compound ID"],
+            "protocols": {1: {"ignore": ["Run Lab"]}, 2: {"ignore": ["Molecule Name"]}},
+        }
+        apply_global_ignores(cfg)
+        # every block keeps its own entries and gains the global one
+        self.assertEqual(cfg["protocols"][1]["ignore"], ["Run Lab", "Compound ID"])
+        self.assertEqual(cfg["protocols"][2]["ignore"], ["Molecule Name", "Compound ID"])
+
+    def test_block_without_ignore_key_gets_one(self):
+        """A block with no `ignore:` still receives the global columns."""
+        cfg = {"ignore_columns": ["Compound ID"], "protocols": {1: {"readouts": {}}}}
+        apply_global_ignores(cfg)
+        # the key is created rather than skipped
+        self.assertEqual(cfg["protocols"][1]["ignore"], ["Compound ID"])
+
+    def test_no_duplicate_when_block_already_lists_it(self):
+        """A column named both globally and per block appears exactly once."""
+        cfg = {"ignore_columns": ["Compound ID"], "protocols": {1: {"ignore": ["Compound  ID"]}}}
+        apply_global_ignores(cfg)
+        # whitespace-insensitive match, so the block's own spelling is kept alone
+        self.assertEqual(cfg["protocols"][1]["ignore"], ["Compound  ID"])
+
+    def test_missing_or_empty_global_list_is_a_noop(self):
+        """Config without `ignore_columns:` is returned untouched."""
+        cfg = {"protocols": {1: {"ignore": ["Run Lab"]}}}
+        apply_global_ignores(cfg)
+        # nothing added when there is no global list
+        self.assertEqual(cfg["protocols"][1]["ignore"], ["Run Lab"])
+
+    def test_global_ignore_unblocks_mapping(self):
+        """The folded column counts as ignored, not unmapped, so `ok` becomes True."""
+        cfg = {
+            "ignore_columns": ["Compound ID"],
+            "protocols": {1: {"identifiers": {"batch_id": "Molecule-Batch ID"},
+                              "readouts": {"LogD": 1}}},
+        }
+        block = cfg["protocols"][1]
+        header = ["Compound ID", "Molecule-Batch ID", "LogD"]
+        # before folding, the extra column blocks the gate
+        self.assertFalse(evaluate_mapping(header, block)["ok"])
+        apply_global_ignores(cfg)
+        res = evaluate_mapping(header, block)
+        # after folding it is reported as ignored and the gate opens
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["ignored"], ["Compound ID"])
+        self.assertEqual(res["unmapped"], [])
 
 
 if __name__ == '__main__':

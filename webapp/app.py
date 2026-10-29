@@ -51,7 +51,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 STAGE_DIR = Path(tempfile.mkdtemp(prefix="cdd_webapp_"))
 atexit.register(lambda: shutil.rmtree(STAGE_DIR, ignore_errors=True))
 
-CONFIG = yaml.safe_load(CONFIG_PATH.read_text())
+CONFIG = cu.apply_global_ignores(yaml.safe_load(CONFIG_PATH.read_text()))
 VAULT = CONFIG.get("vault", 7108)
 
 # file_id -> staged unit (raw header/rows kept so a protocol change can re-convert).
