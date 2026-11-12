@@ -95,6 +95,7 @@ def _unit_view(fid):
         "file_id": fid,
         "parent": e["parent"],
         "species": e.get("species"),
+        "split": e.get("split"),   # e.g. 'route: PO', 'cell line: MDCK II'
         "protocol_pid": e.get("pid"),
         "protocol_name": e.get("name"),
         "rows": e.get("kept", len(e.get("raw_rows", []))),
@@ -148,12 +149,13 @@ def _unregistered_batches(header, rows, block, cache):
         return []
 
 
-def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookups=None, batch_cache=None):
+def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookups=None, batch_cache=None,
+                split=None):
     """Convert (if a pid is known) + evaluate + store a submission unit. Before
     flagging a unit `ready`, check CDD for an existing identical upload and flag
     it `already-uploaded` instead (to avoid submitting the same data twice)."""
     e = STAGE.setdefault(fid, {})
-    e.update(parent=parent, species=species, raw_header=header, raw_rows=rows,
+    e.update(parent=parent, species=species, split=split, raw_header=header, raw_rows=rows,
              pid=pid, candidates=candidates or [])
     if pid is None:
         e.update(csv_path=None, name=None, mapping_ok=False, unmapped=[], missing=[],
@@ -273,6 +275,14 @@ async def upload(files: list[UploadFile] = File(...)):
                     species.title()) or det["species_pids"].get(species.capitalize())
                 units.append(_stage_unit(uuid.uuid4().hex, uf.filename, species,
                                          header, srows, pid, cands, lookups=lookups, batch_cache=batch_cache))
+        elif det["status"].endswith("_group"):   # route, cell line: split on that column's value
+            key = det["status"][: -len("_group")]
+            col = key.replace("_", " ")
+            pids = {cu.split_key(v): p for v, p in det[f"{key}_pids"].items()}
+            for value, vrows in (cu.split_species(header, rows, col) or []):
+                units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None, header, vrows,
+                                         pids.get(cu.split_key(value)), cands, lookups=lookups,
+                                         batch_cache=batch_cache, split=f"{col}: {value}"))
         elif det["status"] == "single":
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
                                      header, rows, det["pid"], cands, lookups=lookups, batch_cache=batch_cache))
@@ -291,7 +301,7 @@ def recheck(payload: dict = Body(...)):
         raise HTTPException(404, "unknown file_id")
     return _stage_unit(fid, e["parent"], e.get("species"),
                        e["raw_header"], e["raw_rows"], int(pid) if pid else None,
-                       e.get("candidates"), lookups={})
+                       e.get("candidates"), lookups={}, split=e.get("split"))
 
 
 @app.post("/api/submit")

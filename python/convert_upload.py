@@ -26,6 +26,7 @@ What it does to the workbook's "Upload" tab (found case/space-insensitively):
 
 import csv
 import re
+import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 
@@ -157,6 +158,15 @@ def species_key(s):
     return _norm(s).lower().replace(" ", "")
 
 
+def split_key(v):
+    """Lookup key for a split value (route, cell line): Unicode NFKC, then species_key.
+
+    NFKC folds compatibility characters, so 'MDR1-MDCKⅡ' (one Roman-numeral
+    character, an older WuXi spelling) keys the same as 'MDR1-MDCK II'.
+    """
+    return species_key(unicodedata.normalize("NFKC", str(v)))
+
+
 def species_alias_map(config):
     """Build {species_key(raw cell value): canonical species} from the config.
 
@@ -219,16 +229,17 @@ def normalize_species(header, rows, aliases):
     return out
 
 
-def split_species(header, rows):
-    """Split rows by a 'Species' column into [(species, rows), ...], first-seen order.
+def split_species(header, rows, column=SPECIES_HEADER):
+    """Split rows by a column ('Species' by default) into [(value, rows), ...], first-seen order.
 
-    Returns None if there is no species column (i.e. not a species file).
-    Rows with a blank species value match nothing and are dropped.
+    `column` matches the header case-insensitively, so 'route' splits on 'Route'.
+    Returns None if the file has no such column. Rows with a blank value match
+    nothing and are dropped.
     """
     hdr_norm = [_norm(h).lower() for h in header]
-    if SPECIES_HEADER not in hdr_norm:
+    if column not in hdr_norm:
         return None
-    sc = hdr_norm.index(SPECIES_HEADER)
+    sc = hdr_norm.index(column)
     species_of = lambda r: str(r[sc]).strip() if sc < len(r) and r[sc] is not None else ""
     order, seen = [], set()
     for r in rows:

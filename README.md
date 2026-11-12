@@ -171,7 +171,11 @@ protocol's **Runs** tab in the web UI — see CDD's guide:
 Prefer a UI over the CLI? [webapp/](webapp/) is a local FastAPI app that wraps
 the same pipeline: drop WuXi `.xlsx` workbooks, it reads each **Upload** tab,
 auto-detects the protocol from the columns (change it via a dropdown), splits
-microsomal files by species, and — once every row is confirmed (the **Submit**
+microsomal / hepatocyte / PPB files by **species**, mouse-PK files by **route**
+(IV → `Mouse PK Cassette IV`, PO → `Mouse PK Cassette PO`) and MDCK permeability files by **cell line**
+(`MDR1-MDCK II` → `MDR1-MDCK II (inh)`, `MDCK II` → `MDCK II (inh)`). Protocols that share a column layout
+declare their split value in config (`species:` / `route:` / `cell_line:`), and must otherwise be identical.
+Once every row is confirmed (the **Submit**
 button turns from grey to green) — submits the batch to CDD and tracks each run's
 progress. When every run commits, it **verifies the committed data against the
 source files** (see below): each row flips to **SUCCESS** and the button turns
@@ -299,6 +303,7 @@ walks through it step by step.
 | [python/split_species.py](python/split_species.py) | Split an `_upl.csv` into one CSV per species (e.g. MMS → `_Human_upl.csv` / `_Mouse_upl.csv`); Python port of the ADME HTML tool's species split |
 | [python/convert_upload.py](python/convert_upload.py) | Turn a raw WuXi `.xlsx` **Upload** tab into CDD-ready rows (qualifiers, ISO dates, blank-id drop, MDR1 identifier rename, species split) |
 | [python/detect_protocol.py](python/detect_protocol.py) | Guess a file's CDD protocol from its column signature (config-driven) |
+| [python/mpk_to_upload.py](python/mpk_to_upload.py) | Build a CDD upload CSV from a WuXi mouse-PK report that has **no Upload tab** — reads the `PK Report` + `Dose` tabs, one row per (analyte, route), **one CSV per route** — IV → 137872 `Mouse PK Cassette IV`, PO → 138367 `Mouse PK Cassette PO` (each block's `route:` field; both share one `report:` label map via a YAML anchor). `python python/mpk_to_upload.py <report.xlsx>...` writes `<report>_IV_bolus_upl.csv` + `<report>_PO_upl.csv` beside each; `--upload-tab DIR` also writes a **copy of each report with an `Upload` tab** (both routes) into DIR, ready to drag into the webapp — added at the zip level, so the report's charts and images are kept |
 | [webapp/](webapp/) | Local-only FastAPI drag-drop import app (`cdd/bin/python webapp/app.py`) — reuses the modules above |
 | [static/verify_file.html](static/verify_file.html) | **Send this to WuXi.** Standalone offline page: they drop a report and it checks the Upload tab against our convention before they send it |
 | [python/convert_dataset.py](python/convert_dataset.py) | `convert_to_target_format` — long→wide pivot for MDR1-style data |

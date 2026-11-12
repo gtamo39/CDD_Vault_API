@@ -87,7 +87,8 @@ function render(){
 
     const f = document.createElement("td");
     f.className = "fname";
-    f.innerHTML = `${u.parent}` + (u.species ? `<small>species: ${u.species}</small>` : "");
+    f.innerHTML = `${u.parent}` + (u.species ? `<small>species: ${u.species}</small>` : "")
+      + (u.split ? `<small>${u.split}</small>` : "");
     tr.appendChild(f);
 
     const p = document.createElement("td");

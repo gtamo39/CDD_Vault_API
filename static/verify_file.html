@@ -103,6 +103,8 @@
         <li>Endpoint column names must match exactly (spelling, spacing, units, and the <code>- PgP inhibitor</code> suffixes are all significant).</li>
         <li>Numeric result columns must contain <b>numbers only</b>. Never write <code>NA</code>, <code>ND</code>, or any other text — <b>leave the cell empty instead</b>. The import rejects a row that has text in a numeric field. A <code>&lt;</code> or <code>&gt;</code> qualifier (e.g. <code>&lt;0.5</code>) is fine.</li>
         <li><code>Run Lab</code>, <code>Compound ID</code> and <code>Molecule Name</code> are allowed but ignored. Any other unexpected column is flagged.</li>
+        <li>MDCK permeability: <code>Cell line</code> must be exactly <code>MDR1-MDCK II</code> or <code>MDCK II</code> — it decides where the row is filed.</li>
+        <li>Mouse PK: one row per compound and route. <code>Route</code> must be exactly <code>IV bolus</code> or <code>PO</code>. Leave a parameter cell empty when it does not apply to that route or was not determined (never <code>ND</code>).</li>
       </ul>
     </div>
     <div id="specList"></div>
@@ -123,7 +125,7 @@ const ID_PREFIXED = "Batch Molecule-Batch ID";
 const IGNORE_ALL = ["Run Lab", "Compound ID"];
 
 const PROTOCOLS = [
-  { key:"MDR1", name:"MDR1-MDCK II permeability (± PgP inhibitor)", identifier:ID_PREFIXED,
+  { key:"MDR1", name:"MDCK II / MDR1-MDCK II permeability (± PgP inhibitor)", identifier:ID_PREFIXED,
     ignore:["Molecule Name","Run Lab"],
     readouts:["Study number","Date","Cell line","Mean Papp A to B","Mean Papp B to A","Efflux ratio",
       "Mean %Solution Recovery A to B","Mean %Solution Recovery B to A","Provider Comment","Serac Comment",
@@ -136,13 +138,22 @@ const PROTOCOLS = [
     numeric:["Mean Papp A to B","Mean Papp B to A","Efflux ratio",
       "Mean %Solution Recovery A to B","Mean %Solution Recovery B to A",
       "Mean Papp A to B - PgP Inhibitor","Mean Papp B to A - PgP inhibitor","Efflux ratio - PgP inhibitor",
-      "Mean %Solution Recovery A to B - PgP inhibitor","Mean %Solution Recovery B to A - PgP inhibitor"] },
+      "Mean %Solution Recovery A to B - PgP inhibitor","Mean %Solution Recovery B to A - PgP inhibitor"],
+    values:{"Cell line":["MDR1-MDCK II","MDCK II"]} },
   { key:"Caco2", name:"Caco-2 permeability", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Date","Mean Papp (10-6 cm/s) A to B","Mean Papp (10-6 cm/s) B to A",
       "Efflux Ratio","Mean %Soulution Recovery A to B","Mean %Solution Recovery B to A",
       "Provider Comment","Comment","Permeability Class","Efflux Transporter Substrate","Provider Name"],
     numeric:["Mean Papp (10-6 cm/s) A to B","Mean Papp (10-6 cm/s) B to A","Efflux Ratio",
       "Mean %Soulution Recovery A to B","Mean %Solution Recovery B to A"] },
+  { key:"HMS", name:"Hepatocyte stability (any species)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Date","Species","T½ (min)","Clint_hep (uL/min/10^6)",
+      "Clint_liver (mL/min/kg)","Provider Comment","Comment","Provider Name"],
+    numeric:["T½ (min)","Clint_hep (uL/min/10^6)","Clint_liver (mL/min/kg)"] },
+  { key:"MPK", name:"Mouse PK (IV + PO)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
+    readouts:["Study number","Date","Species","Strain","Gender","Route","Formulation","Concentration (mg/mL)","Dose (mg/kg)","Dosing Volume (mL)","C0 (ng/mL)","Cmax (ng/mL)","Clearance (mL/min/kg)","Vdss (L/kg)","Tmax (hr)","Tlast (hr)","T1/2 (hr)","MRTlast (hr)","AUC(last) (ng.h/mL)","AUCinf (ng.h/mL)","AUC (%)","Bioavailability (%)","Analyte","Comment"],
+    numeric:["Concentration (mg/mL)","Dose (mg/kg)","Dosing Volume (mL)","C0 (ng/mL)","Cmax (ng/mL)","Clearance (mL/min/kg)","Vdss (L/kg)","Tmax (hr)","Tlast (hr)","T1/2 (hr)","MRTlast (hr)","AUC(last) (ng.h/mL)","AUCinf (ng.h/mL)","AUC (%)","Bioavailability (%)"],
+    values:{"Route":["IV bolus","PO"]} },
   { key:"LogD", name:"LogD 7.4", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Study Date","LogD7.4 (Oct/buff) result","Provider Comment","Provider Name","Comment"],
     numeric:["LogD7.4 (Oct/buff) result"] },
@@ -322,6 +333,16 @@ function analyze(fileName, sheetNames, upload){
   }
   push("Numeric result columns hold numbers only", offenders.length?"fail":"pass",
     offenders.length?"The import rejects these rows — leave the cell empty instead of writing text. Found in: "+offenders.join("; "):"");
+
+  for(const [col,allowed] of Object.entries(p.values||{})){
+    const i=idxOf(header,col); if(i<0) continue;
+    const vals=rows.map(r=>(r[i]??"").trim());
+    const bad=[...new Set(vals.filter(v=>!allowed.includes(v)))];
+    const split=allowed.map(a=>[a,vals.filter(v=>v===a).length]).filter(([,n])=>n).map(([a,n])=>`${a} ×${n}`).join(" · ");
+    push(`“${col}” is ${allowed.map(a=>`“${a}”`).join(" or ")} on every row`, bad.length?"fail":"pass",
+      bad.length?"Each row is filed by this exact value, so any other spelling is not imported. Found: "
+        +bad.map(v=>v?`“${v}”`:"(blank)").join(", "):"Rows: "+split);
+  }
 
   for(const col of ["Study number","Date","Study Date", p.identifier===ID_PREFIXED?ID_PREFIXED:ID_UNPREFIXED]){
     const i=idxOf(header,col); if(i<0) continue;

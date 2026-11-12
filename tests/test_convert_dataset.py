@@ -35,6 +35,8 @@ sys.path.insert(0, str(ROOT / 'python'))
 from convert_upload import (apply_corrections, apply_global_ignores,
                             normalize_species, species_alias_map, split_species)
 from import_to_protocol import evaluate_mapping
+from detect_protocol import _group_name
+import mpk_to_upload as mpk
 from convert_dataset import (
     check_columns_match,
     convert_to_target_format,
@@ -1109,6 +1111,334 @@ class ApplyGlobalIgnoresTests(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["ignored"], ["Compound ID"])
         self.assertEqual(res["unmapped"], [])
+
+
+class GroupNameTests(unittest.TestCase):
+    """detect_protocol._group_name — label a species group from what the tied protocol
+    names share, so a hepatocyte file is not labelled 'Microsomal stability'."""
+
+    def test_shared_prefix_becomes_the_label(self):
+        """Names sharing 'Microsomal stability species' yield that assay's label."""
+        tied = [{"name": "Microsomal stability species dog"},
+                {"name": "Microsomal stability species human"}]
+        # the trailing 'species' word is stripped, the assay name kept
+        self.assertEqual(_group_name(tied), "Microsomal stability (species split)")
+
+    def test_a_different_assay_gets_its_own_label(self):
+        """Hepatocyte protocols must not inherit the microsomal label."""
+        tied = [{"name": "Hepatocyte stability species dog"},
+                {"name": "Hepatocyte stability species monkey"}]
+        # proves the label follows the data, not a hard-coded string
+        self.assertEqual(_group_name(tied), "Hepatocyte stability (species split)")
+
+    def test_prefix_is_cut_at_a_whole_word(self):
+        """'Ppb UC (mouse)' vs 'ppb UC (Human)' share only 'pp' — too little to name."""
+        tied = [{"name": "ppp UC (mouse)"}, {"name": "ppb UC (Human)"}]
+        # a mid-word fragment is rejected in favour of the generic label
+        self.assertEqual(_group_name(tied), "Species split")
+
+    def test_missing_names_fall_back(self):
+        """Blocks with no name still produce a usable label instead of raising."""
+        tied = [{"name": None}, {"name": None}]
+        # None is tolerated and the generic label is returned
+        self.assertEqual(_group_name(tied), "Species split")
+
+
+def _mpk_workbook(path, species="Male BALB/c Mouse, Fed"):
+    """Write a 2-analyte cassette MPK report with the real report layout and fake TEST- ids."""
+    import openpyxl
+    from datetime import datetime
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "PK Report"
+    head = {8: ("Study No.", ["STUDY-1"]), 9: ("Species", [species]),
+            10: ("Administered compound", ["TEST-0000001", "TEST-0000002", "TEST-0000001", "TEST-0000002", "PK Calculation Settings"]),
+            11: ("Study Group", ["IV bolus1", "IV bolus1", "PO2", "PO2", "Program"]),
+            12: ("Nominal dose (mg/kg)", [1, 1, 5, 5, "Model"]),
+            14: ("Formulation", ["0.2 mg/mL in vehicle", None, "1 mg/mL in vehicle", None]),
+            15: ("In-life start date", [datetime(2026, 10, 1)]),
+            19: ("Analyte compound", ["TEST-0000001", "TEST-0000002", None, None, "Calculated by"]),
+            20: ("Batch No.", ["TEST-0000001-001", "TEST-0000002-001"])}
+    for r, (label, vals) in head.items():
+        ws.cell(r, 2, label)
+        for i, v in enumerate(vals):
+            ws.cell(r, 3 + i, v)
+    for top, cpd, iv, po in ((22, "TEST-0000001", [100, 2.5, 300, "--"], [50, "ND", 150, 50]),
+                             (32, "TEST-0000002", [80, 3.0, 200, "--"], [40, 4.0, 120, 30])):
+        ws.cell(top, 2, f"Pharmacokinetics of {cpd} (ng/mL)"); ws.cell(top + 1, 2, cpd)
+        ws.cell(top + 2, 2, "IV bolus1"); ws.cell(top + 2, 10, "PO2")
+        for c, m in ((2, 6), (10, 14)):
+            ws.cell(top + 3, c, "PK Parameters"); ws.cell(top + 3, m, "Mean")
+        for i, (a, b) in enumerate(zip(["C0 (ng/mL)", "T1/2 (h)", "AUC0-last (ng.h/mL)", "Rsq_adj"],
+                                       ["Cmax (ng/mL)", "T1/2 (h)", "AUC0-last (ng.h/mL)", "Bioavailability (%)a"])):
+            ws.cell(top + 4 + i, 2, a); ws.cell(top + 4 + i, 6, iv[i])
+            ws.cell(top + 4 + i, 10, b); ws.cell(top + 4 + i, 14, po[i])
+    d = wb.create_sheet("Dose")
+    d.append(["Group No.", "Dose Route", "Test Article", "Nominal Conc. (mg/mL)"])
+    for g, cpd, conc in ((1, "TEST-0000001", 0.2), (1, "TEST-0000002", 0.2), (2, "TEST-0000001", 1), (2, "TEST-0000002", 1)):
+        d.append([g, "[Pre]IV bolus" if g == 1 else "[Pre]PO", cpd, conc])
+    wb.save(path)
+
+
+class MpkToUploadTests(unittest.TestCase):
+    """mpk_to_upload.report_rows — build one upload row per (analyte, group) from a WuXi
+    MPK report with no Upload tab, using the real `report:` map of protocol 137872."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile, import_to_protocol as itp
+        cls.protos = itp.load_config(str(ROOT / "config" / "config.yaml"))["protocols"]
+        cls.block = {k: v for k, v in cls.protos[137872].items() if k != "route"}
+        cls.dir = tempfile.TemporaryDirectory()
+        cls.path = Path(cls.dir.name) / "mpk.xlsx"
+        _mpk_workbook(cls.path)
+        cls.header, rows, cls.blanked = mpk.report_rows(cls.path, cls.block)
+        cls.rows = [dict(zip(cls.header, r)) for r in rows]
+        cls.by = {(r["Molecule-Batch ID"], r["Route"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.dir.cleanup()
+
+    def test_one_row_per_analyte_and_route(self):
+        """2 analytes x (IV, PO) give 4 rows keyed on the r20 batch id and the group name minus its number."""
+        # every (batch, route) pair appears exactly once
+        self.assertEqual(sorted(self.by), [("TEST-0000001-001", "IV bolus"), ("TEST-0000001-001", "PO"),
+                                           ("TEST-0000002-001", "IV bolus"), ("TEST-0000002-001", "PO")])
+
+    def test_header_is_identifier_plus_config_readouts(self):
+        """The CSV columns are the identifier, then the block's readouts in config order."""
+        # column order is the contract handed to WuXi
+        self.assertEqual(self.header, ["Molecule-Batch ID"] + list(self.block["readouts"]))
+
+    def test_mean_column_is_read_by_label(self):
+        """IV and PO params come from each side's Mean column, matched by row label."""
+        iv, po = self.by[("TEST-0000001-001", "IV bolus")], self.by[("TEST-0000001-001", "PO")]
+        # IV-only params on the IV row, PO-only on the PO row
+        self.assertEqual((iv["C0 (ng/mL)"], iv["AUC(last) (ng.h/mL)"]), (100, 300))
+        self.assertEqual((po["Cmax (ng/mL)"], po["Bioavailability (%)"]), (50, 50))
+        # an IV row carries no PO-only value and vice versa
+        self.assertEqual((iv["Cmax (ng/mL)"], po["C0 (ng/mL)"]), ("", ""))
+
+    def test_nd_is_blanked_and_counted(self):
+        """'ND' in a numeric field is written blank and counted, since CDD rejects text in a Number readout."""
+        # the PO T1/2 of the first analyte was 'ND'
+        self.assertEqual(self.by[("TEST-0000001-001", "PO")]["T1/2 (hr)"], "")
+        self.assertEqual(dict(self.blanked["T1/2 (hr)"]), {"ND": 1})
+
+    def test_unmapped_label_is_ignored(self):
+        """A params row whose label is not in the map ('Rsq_adj' = '--') neither errors nor lands anywhere."""
+        # no blank count is charged to a field for an unmapped row
+        self.assertNotIn("--", {tok for c in self.blanked.values() for tok in c})
+
+    def test_species_text_is_split(self):
+        """'Male BALB/c Mouse, Fed' -> Gender / Strain / Species, with the fed state in Comment."""
+        r = self.rows[0]
+        # each part lands in its own readout
+        self.assertEqual((r["Gender"], r["Strain"], r["Species"], r["Comment"]), ("Male", "BALB/c", "Mouse", "Fed"))
+
+    def test_group_level_fields(self):
+        """Nominal dose per column, formulation forward-filled over a merged group, ISO date, Dose-tab conc."""
+        r = self.by[("TEST-0000002-001", "IV bolus")]
+        # the second IV column had a blank (merged) formulation cell
+        self.assertEqual(r["Formulation"], "0.2 mg/mL in vehicle")
+        # nominal dose, date and concentration come from their own sources
+        self.assertEqual((r["Dose (mg/kg)"], r["Date"], r["Concentration (mg/mL)"]), (1, "2026-10-01", 0.2))
+        self.assertEqual(self.by[("TEST-0000002-001", "PO")]["Concentration (mg/mL)"], 1)
+
+    def test_route_block_keeps_only_its_route(self):
+        """The IV block (route 'IV bolus') and the PO block (route 'PO') each take only their own rows."""
+        for pid, route in ((137872, "IV bolus"), (138367, "PO")):
+            _, rows, _ = mpk.report_rows(self.path, self.protos[pid])
+            ri = self.header.index("Route")
+            # 2 analytes, one row each, all on this block's route
+            self.assertEqual([r[ri] for r in rows], [route, route])
+
+    def test_route_split_loses_and_duplicates_nothing(self):
+        """IV rows + PO rows == the unfiltered rows, so no row is dropped or written twice."""
+        both = [mpk.report_rows(self.path, self.protos[pid])[1] for pid in (137872, 138367)]
+        # the two route files together are exactly the whole report
+        self.assertEqual(sorted(map(tuple, both[0] + both[1])),
+                         sorted(tuple(r.get(h, "") for h in self.header) for r in self.rows))
+
+    def test_iv_and_po_share_one_report_map(self):
+        """The PO block reuses the IV block's `report:` map through a YAML anchor, not a copy."""
+        # one object, so a label fix applies to both routes
+        self.assertIs(self.protos[137872]["report"], self.protos[138367]["report"])
+
+    def test_unparseable_species_raises(self):
+        """Species text that does not fit species_pattern stops the run instead of guessing."""
+        bad = Path(self.dir.name) / "bad.xlsx"
+        _mpk_workbook(bad, species="mouse")
+        # a guess would put wrong Strain/Gender into CDD
+        with self.assertRaises(ValueError):
+            mpk.report_rows(bad, self.block)
+
+
+class RouteSplitTests(unittest.TestCase):
+    """A route split is the twin of the species split: blocks that tie on columns and carry
+    `route:` form a route group, and the webapp splits rows on the Route column."""
+
+    CONFIG = {"protocols": {
+        1: {"name": "PK X IV", "route": "IV bolus", "identifiers": {"batch_id": "Molecule-Batch ID"},
+            "readouts": {"Route": 1, "Cmax": 2}},
+        2: {"name": "PK X PO", "route": "PO", "identifiers": {"batch_id": "Molecule-Batch ID"},
+            "readouts": {"Route": 3, "Cmax": 4}},
+    }}
+
+    def test_tied_route_blocks_form_a_route_group(self):
+        """Identical columns + a `route:` on each block -> 'route_group' with route -> pid."""
+        from detect_protocol import detect
+        d = detect(["Molecule-Batch ID", "Route", "Cmax"], self.CONFIG)
+        # the tie is resolved by route, not left 'ambiguous'
+        self.assertEqual(d["status"], "route_group")
+        self.assertEqual(d["route_pids"], {"IV bolus": 1, "PO": 2})
+        # the label names the split it is
+        self.assertEqual(d["name"], "PK X (route split)")
+
+    def test_split_on_route_column(self):
+        """split_species(..., 'route') splits on a 'Route' header, case-insensitively."""
+        rows = [["A-1-001", "IV bolus"], ["A-1-001", "PO"], ["B-2-001", "IV bolus"]]
+        out = split_species(["Molecule-Batch ID", "Route"], rows, "route")
+        # first-seen order, every row kept exactly once
+        self.assertEqual([(r, len(x)) for r, x in out], [("IV bolus", 2), ("PO", 1)])
+
+    def test_species_is_still_the_default_split(self):
+        """Without a column argument split_species keeps splitting on Species."""
+        out = split_species(["id", "Species"], [["a", "Rat"], ["b", "Dog"]])
+        # the existing species behaviour is unchanged
+        self.assertEqual([s for s, _ in out], ["Rat", "Dog"])
+
+    def test_real_mpk_blocks_form_a_route_group(self):
+        """The real IV/PO Mouse PK blocks route an Upload header to 137872 / 138367."""
+        import import_to_protocol as itp
+        from detect_protocol import detect
+        cfg = itp.load_config(str(ROOT / "config" / "config.yaml"))
+        b = cfg["protocols"][137872]
+        d = detect([b["identifiers"]["batch_id"]] + list(b["readouts"]), cfg)
+        # both routes resolve to their own protocol
+        self.assertEqual(d["route_pids"], {"IV bolus": 137872, "PO": 138367})
+
+
+class AddUploadSheetTests(unittest.TestCase):
+    """mpk_to_upload.add_upload_sheet — add an 'Upload' tab at the zip level so charts and every
+    other part of the CRO workbook survive byte-for-byte (an openpyxl re-save drops charts)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile, zipfile, openpyxl
+        from openpyxl.chart import BarChart, Reference
+        cls.dir = tempfile.TemporaryDirectory()
+        cls.src, cls.dst = Path(cls.dir.name) / "src.xlsx", Path(cls.dir.name) / "dst.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "PK Report"
+        for i in range(1, 5):
+            ws.append([i, i * 2])
+        ch = BarChart()
+        ch.add_data(Reference(ws, min_col=2, min_row=1, max_row=4))
+        ws.add_chart(ch, "D2")
+        wb.save(cls.src)
+        cls.header = ["Molecule-Batch ID", "Route", "Cmax (ng/mL)"]
+        cls.rows = [["TEST-0000001-001", "IV bolus", ""], ["TEST-0000001-001", "PO", 12.5]]
+        mpk.add_upload_sheet(cls.src, cls.dst, cls.header, cls.rows)
+        cls.zs, cls.zd = zipfile.ZipFile(cls.src), zipfile.ZipFile(cls.dst)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.zs.close(); cls.zd.close(); cls.dir.cleanup()
+
+    def test_chart_and_every_other_part_survive(self):
+        """Only the 3 index parts change; the chart part and all others are byte-identical."""
+        patched = {"xl/workbook.xml", "xl/_rels/workbook.xml.rels", "[Content_Types].xml"}
+        names = set(self.zs.namelist())
+        # the source really had a chart to lose
+        self.assertTrue(any("charts/" in n for n in names))
+        # nothing lost, nothing altered outside the index parts
+        self.assertTrue(names <= set(self.zd.namelist()))
+        self.assertTrue(all(self.zs.read(n) == self.zd.read(n) for n in names - patched))
+
+    def test_upload_tab_is_last_and_reads_back(self):
+        """The new tab is appended last and read_upload_sheet returns the rows given."""
+        import openpyxl
+        from convert_upload import read_upload_sheet
+        # appended, so sheet-position references are untouched
+        self.assertEqual(openpyxl.load_workbook(self.dst).sheetnames, ["PK Report", "Upload"])
+        h, r = read_upload_sheet(self.dst)
+        # a blank cell stays blank, a number stays a number
+        self.assertEqual((h, r), (self.header, [["TEST-0000001-001", "IV bolus", ""], ["TEST-0000001-001", "PO", 12.5]]))
+
+    def test_refuses_a_second_upload_tab(self):
+        """Running on a workbook that already has 'Upload' raises instead of adding a duplicate."""
+        # a duplicate sheet name would make the workbook unreadable in Excel
+        with self.assertRaises(ValueError):
+            mpk.add_upload_sheet(self.dst, Path(self.dir.name) / "again.xlsx", self.header, self.rows)
+
+    def test_numeric_text_is_written_as_a_number(self):
+        """A '0.100' text cell becomes a numeric cell; a qualified '< 5' stays text."""
+        x = mpk.sheet_xml(["a", "b"], [["0.100", "< 5"]])
+        # plain numbers become <v>, qualifiers stay inline strings
+        self.assertIn("<v>0.1</v>", x)
+        self.assertIn("&lt; 5", x)
+
+
+class CellLineSplitTests(unittest.TestCase):
+    """MDR1-MDCK II (131399) and MDCK II (138368) share all 26 columns and differ only in the
+    Cell line VALUE, so detection must form a cell-line group and route each row by that value."""
+
+    def test_split_key_folds_the_roman_numeral(self):
+        """'MDR1-MDCKⅡ' (one Unicode character, an older WuXi spelling) keys like 'MDR1-MDCK II'."""
+        from convert_upload import split_key
+        # NFKC turns the roman numeral into 'II'; case and spaces are ignored
+        self.assertEqual(split_key("MDR1-MDCK\u2161"), split_key("MDR1-MDCK II"))
+        # the two cell lines stay distinct
+        self.assertNotEqual(split_key("MDCK II"), split_key("MDR1-MDCK II"))
+
+    def test_tied_cell_line_blocks_form_a_group(self):
+        """Identical columns + a `cell_line:` on each block -> 'cell_line_group' with value -> pid."""
+        from detect_protocol import detect
+        cfg = {"protocols": {
+            1: {"name": "A", "cell_line": "MDR1-MDCK II", "identifiers": {"b": "ID"}, "readouts": {"Cell line": 1, "Papp": 2}},
+            2: {"name": "B", "cell_line": "MDCK II", "identifiers": {"b": "ID"}, "readouts": {"Cell line": 3, "Papp": 4}}}}
+        d = detect(["ID", "Cell line", "Papp"], cfg)
+        # the tie is resolved by cell line, not left 'ambiguous'
+        self.assertEqual((d["status"], d["cell_line_pids"]), ("cell_line_group", {"MDR1-MDCK II": 1, "MDCK II": 2}))
+
+    def test_real_mdck_blocks_tie_whatever_the_identifier_spelling(self):
+        """Both identifier spellings WuXi has used give a cell-line group, never a 'single' winner.
+
+        Regression: with different identifier names on the two blocks, the un-prefixed spelling
+        made 138368 'explain' one more column, so MDR1 reports were routed to MDCK II by precision
+        before the cell-line split could run.
+        """
+        import import_to_protocol as itp
+        from detect_protocol import detect
+        cfg = itp.load_config(str(ROOT / "config" / "config.yaml"))
+        cols = list(cfg["protocols"][131399]["readouts"])
+        for ident in ("Batch Molecule-Batch ID", "Molecule-Batch ID"):
+            d = detect([ident] + cols, cfg)
+            # both spellings reach the value split
+            self.assertEqual(d["status"], "cell_line_group", ident)
+            self.assertEqual(d["cell_line_pids"], {"MDR1-MDCK II": 131399, "MDCK II": 138368})
+
+    def test_split_groups_differ_only_in_the_split_value(self):
+        """In the real config, blocks that share a column set and a split key share their identifiers.
+
+        Detection scores precision on readouts + identifiers, so any other difference can pick a
+        winner before the value split runs — the bug the test above pins down for MDCK.
+        """
+        import import_to_protocol as itp
+        from detect_protocol import SPLIT_KEYS
+        protos = itp.load_config(str(ROOT / "config" / "config.yaml"))["protocols"]
+        for key in SPLIT_KEYS:
+            groups = {}
+            for pid, b in protos.items():
+                if b.get(key) and b.get("readouts"):
+                    groups.setdefault(frozenset(b["readouts"]), []).append(b)
+            for blocks in groups.values():
+                # every block in the group carries the same identifier columns
+                self.assertEqual(len({str(sorted(b["identifiers"].values())) for b in blocks}), 1,
+                                 f"{key}: {[b['name'] for b in blocks]}")
 
 
 if __name__ == '__main__':

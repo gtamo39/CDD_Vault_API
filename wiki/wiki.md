@@ -684,7 +684,9 @@ the correct expectation is `fail`. After both fixes: **ALL 9 FILES MATCH EXPECTA
 ## CANONICAL microsomal-stability readout spec — use it to create Monkey + Dog (2026-10-29)
 
 **Trigger:** `data/uploads/20261029/2026_10_25_MMS_433706-2026100701-MMS_2_report_0.xlsx` — 11 columns,
-2 rows, species **Dog** and **Monkey**. Neither protocol exists in the vault (checked all 50: only
+2 rows, species **Dog** and **Monkey**. Neither protocol existed in the vault (searched the protocol
+list — see the pagination CAUTION below, that search saw only the first 50 of 72; the conclusion held,
+the method did not: only
 `ppb UC (Monkey)` 135300 and `ppb UC (Dog)` 135301, which are PPB, not microsomal). They must be created.
 
 **Verified: human 88861, mouse 88862 and rat 111161 are IDENTICAL** — not just the names and types, but
@@ -849,8 +851,10 @@ file has one; CDD matches whitespace-insensitively, so that one is harmless.
 batch-id format 24/24, all 24 unique, 0 missing in CDD; no readout is `required`, so the 24 blank
 `Provider Comment` / `Comment` cells are fine.
 
-**Upload CONFIRMED landed:** run **2268684** (2026-10-29) holds all **24 rows**; the protocol went 95 → 119
-rows. See the timing CAUTION below — the first read of this run showed 0 rows and `source_files: []`.
+**Upload CONFIRMED landed:** the 2026-10-29 run holds all **24 rows**; the protocol went 95 → 119 rows.
+**Run id corrected 2026-11-04 — the data is in run 2268713, not 2268684.** 2268684 was the
+template-wizard run (0 rows, `source_files: []`) and no longer exists; CDD made a separate run for the
+real import. The count and the conclusion were right, the id was not. See the timing CAUTION below.
 
 ## CAUTION — two ways to misread CDD state as "empty" (2026-10-29)
 
@@ -908,13 +912,15 @@ this build now covers all six assays.
 `115,329` — it truncates mid-function and the import fails with `Invalid or unexpected token`. Find the
 bounds each time rather than hard-coding them: `grep -n "<script>\|^async function inflate" static/verify_file.html`.
 
-## HMS = HEPATOCYTE stability — an assay we have no protocol for (2026-10-29)
+## HMS = HEPATOCYTE stability — diagnosed 2026-10-29, RESOLVED 2026-11-04
 
 **Symptom:** `data/uploads/20261029/2026_10_25_HMS_433706-2026100701-HMS_v4_report_0_corrected.xlsx`
 errors in the webapp, complaining about **PPB** readouts.
 
 **Root cause: HMS is hepatocyte stability, NOT microsomal stability**, and **no hepatocyte protocol exists
-in vault 7108** (all 50 checked — `MAO stability` and `HepG2 …` are different assays). There is no config
+in vault 7108** (`MAO stability` and `HepG2 …` are different assays). **NOTE: that search read only the
+first 50 of 72 protocols — see the pagination CAUTION below. The conclusion was right, the method was
+not.** There is no config
 block either, so the detector has nothing correct to match.
 
 **Why it lands on PPB.** 6 of PPB's 9 readouts are generic admin columns this file also carries —
@@ -957,10 +963,9 @@ with 0 non-numeric tokens, batch-id format 2/2, 0 missing in CDD, only the optio
 keys copy the FILE, so the hepatocyte block must use `"Species"`. (`split_species` lowercases the header
 for its own lookup, so the split itself works either way.)
 
-**Open decision: one protocol per species, or one protocol for all?** Every existing split in this vault
-is per-species (5 microsomal, 6 PPB), and a per-species picklist is what makes a wrong-species row get
-rejected. A single protocol with a multi-value picklist would also work for a brand-new assay with no
-history. Not decided — the operator chooses before creation.
+**RESOLVED 2026-11-04 — per-species, as the convention predicted.** The operator created
+**137788 `Hepatocyte stability species dog`** and **137942 `Hepatocyte stability species monkey`**, each
+with the 9 readouts above and a single-value picklist. See the next section.
 
 ## TSY gained a redundant `Compound ID` column — fixed via `ignore:` (2026-10-29)
 
@@ -1044,6 +1049,585 @@ would change the layout the template was built against.
 **ALL 9 FILES MATCH EXPECTATIONS**; HTML re-audited — zero "CDD", two "Serac" (the MDR1 column names),
 zero network primitives, 24,509 bytes.
 
+## Hepatocyte stability configured — dog 137788 + monkey 137942 (2026-11-04)
+
+Both protocols exist and carry the 9-readout spec exactly: `Study number`, `Date`, `Species` (PickList),
+`T½` (min), `Clint_hep` (uL/min/10^6), `Clint_liver` (mL/min/kg), `Provider Comment`, `Serac Comment`,
+`Provider Name`. **Picklists correct on creation** — dog `[(401464,'Dog')]`, monkey `[(402008,'Monkey')]`
+— so the copied-picklist gotcha was avoided. All but the two comment readouts are `required`, and the
+file's only blanks are those two. Config blocks added: `dhep`/`DHEP` and `chep`/`CHEP` (mirroring
+`dlm`/`clm`), `species: Dog` / `Monkey`, readout ids 2018953-2018962 and 2022664-2022672.
+
+**Config keys copy the FILE, as always:** the file ships `T½ (min)` / `Clint_hep (uL/min/10^6)` /
+`Clint_liver (mL/min/kg)` with units in the header, while CDD keeps units in `unit_label` and names the
+readouts `T½` / `Clint_hep` / `Clint_liver`. The file's `Comment` maps to CDD's `Serac Comment`.
+
+**The capital-S `Species` is what keeps HMS and MMS apart.** `_norm` collapses whitespace but does NOT
+lowercase, so the HMS file's `Species` never matches the MMS blocks' lowercase `species` key, and vice
+versa. Measured both directions: an HMS file scores the hepatocyte blocks 1.00/1.00 with MMS at 0.67;
+an MMS file scores the microsomal blocks 1.00 with HMS at 0.67. **Do not "tidy" either spelling.**
+
+**BUG FIXED — the species-group label was hard-coded.** `detect_protocol` returned the literal
+`"Microsomal stability (species split)"` for EVERY species group, so hepatocyte files (and PPB files
+before them) were labelled as microsomal in the webapp. New `_group_name(tied)` derives it from the
+prefix the tied protocol names share, cut back to a whole word, with the trailing `species` stripped:
+HMS → `Hepatocyte stability (species split)`, MMS → `Microsomal stability (species split)`,
+PPB → `Species split` (its names genuinely diverge, so no honest common prefix exists — the generic
+label is correct, not a regression). 4 new `GroupNameTests`.
+
+**Config `name:` values synced to CDD (3 were stale)** — `MDR1-MDCK II Inhibitor` → `MDR1-MDCK` (renamed again 2026-11-10 to `MDR1-MDCK II (inh)`),
+`Thermodynamic Solubility` → `ThermoSol (blank FaSSIF)`, `ppp UC (mouse)` → `Ppb UC (mouse)`. `name:` was
+display-only before, but `_group_name` now reads it, so accuracy matters. All 17 blocks now match the live
+CDD name.
+
+**DONE 2026-11-04 — templates built and first data committed.** The operator named them **`DHMS_GT`**
+(62261, dog 137788) and **`CHMS_GT`** (62259, monkey 137942), after the HMS file prefix rather than the
+`*HEP_GT` I had suggested; config aliases/labels were renamed to match (`dhms`/`DHMS`, `chms`/`CHMS`).
+Both verified: 10 header mappings each, all 9 readout ids belong to their own protocol, identifier on
+`Molecule-Batch ID`, and **template ids == config ids** for both. Data landed — **1 row in each
+protocol, 0 empty runs**, from the split CSVs in `data/uploads/20261104/`.
+
+**Checker gained an HMS entry.** It previously mis-detected HMS reports as PPB at 67%, which would mislead
+WuXi. `PROTOCOLS` is now MDR1, Caco2, **HMS**, LogD, TSY, PPB, MMS. Margins re-measured on the real
+reports — HMS, MMS, TSY and Caco2 each win at recall 1.00 with the runner-up at 0.67. HMS report passes
+7/7; 9-file regression still **ALL 9 FILES MATCH EXPECTATIONS**; re-audited: zero "CDD", two "Serac" (the
+MDR1 column names), zero network primitives, 24,866 bytes. **Re-send to WuXi.**
+
+**Pre-flight of the report, all green:** 2 rows (1 Dog, 1 Monkey), 3 numeric columns with 0 non-numeric
+tokens (no `corrections:` needed), batch-id format 2/2, 0 missing in CDD. The 20261104 copy differs from
+the 20261029 one by md5 but the Upload tab data is **identical** — same header, same values.
+
+**78 tests pass.** All 15 real reports re-swept: every one routes and maps `ok=True`, including HMS which
+previously failed.
+
+## State of play — 17 importable protocols, all templated (2026-11-04)
+
+**Every configured protocol can now be imported to.** 17 blocks carry readouts + a mapping template, and
+`protocols:` has no extraction-only stubs left. **Full binding audit run across all 17: every template
+targets its own protocol, no cross-binding.** That is the check worth repeating after any template work,
+because `build_payload` never sends a protocol id — the template alone decides the destination.
+
+Config `name:` for all 17 matches the live CDD name. The only TODOs left in `config.yaml` are
+`notifications.tenant_id` and `.client_id`, both waiting on IT.
+
+**Empty runs, re-measured with the RELIABLE method** (`/protocols/<pid>/data` grouped by each row's `run`
+key — NOT `readout_rows`, which is never expanded). Earlier counts in this wiki came from the broken
+method and were wrong. Current totals, **46 across 8 protocols**:
+
+| pid | alias | rows | runs | empty |
+|---|---|---|---|---|
+| 125963 | ppb | 140 | 33 | **25** |
+| 88862 | mlm | 387 | 66 | 7 |
+| 88861 | hlm | 385 | 62 | 5 |
+| 131399 | mdck | 186 | 27 | 3 |
+| 85979 | logd | 382 | 62 | 3 |
+| 86015 | solubility | 186 | 39 | 1 |
+| 135299 | ppb_human | 2 | 3 | 1 |
+| 85977 | caco2 | 119 | 23 | 1 |
+
+An empty run is cosmetic — it holds no data and cannot duplicate anything. Most come from the
+mapping-template wizard, which creates a run while building a template. Cleanup is optional tidying,
+not a correctness fix.
+
+**The TSY `Compound ID` question is still formally open.** TSY imports have continued to land since the
+global `ignore_columns:` change (runs on 2026-10-15, 2026-10-27 and 2026-11-02), so nothing is blocked,
+but no read proves which file carried the extra column. If a TSY upload ever returns HTTP 422
+`"Provided mapping template does not match file."`, rebuild `TSY_GT` from a 10-column file leaving
+`Compound ID` unmapped — the way `MDCK-MDR1` is built.
+
+## Hepatocyte panel extends to Mouse / Rat / Human — 3 protocols NEEDED (2026-11-06)
+
+`data/uploads/20261106/2026_11_06_HMS_433706-2026080702-HMS_v1_report_0.xlsx` — 10 columns, **header
+byte-identical** to the 2026-11-04 HMS file, 3 rows, species **Mouse, Rat, Human**. All three rows are
+the SAME compound batch (`unique=1`), i.e. one compound run across a 3-species hepatocyte panel.
+
+**Only dog 137788 and monkey 137942 exist**, so Mouse / Rat / Human hepatocyte protocols must be created
+before anything can import. Detection behaves correctly and safely: it labels the file
+`Hepatocyte stability (species split)` (the 2026-11-04 label fix working on a real file) but
+`species_pids` holds only `{'Dog','Monkey'}`, so the three units fall to the dropdown as
+`needs-selection` and Submit stays disabled. No mis-routing is possible.
+
+**Split CSVs ready in `data/uploads/20261106/`** — `..._Mouse_upl.csv`, `..._Rat_upl.csv`,
+`..._Human_upl.csv`. Each UTF-8-BOM, 10 columns, 1 row, 8 of 10 populated (the 2 blanks are the optional
+comment columns), header identical to the source. Verified: 3 split rows account for 3 source rows, each
+file holds only its own species. **One row per species means each CSV is both the template seed and the
+full dataset** — nothing to delete after building the template.
+
+The existing dog block stood in for the conversion (identifier + corrections); the script **asserts** the
+two HMS blocks share one identifier, one column set and no `corrections:` before relying on that.
+
+**Create each protocol from the canonical 9-readout hepatocyte spec** (same as 137788/137942):
+`Study number` Text, `Date` Text, `Species` PickList, `T½` Number `min`, `Clint_hep` Number
+`uL/min/10^6`, `Clint_liver` Number `mL/min/kg`, `Provider Comment` Text, `Serac Comment` Text,
+`Provider Name` Text. **Give each Species picklist ONE value** — `Mouse`, `Rat`, `Human` respectively.
+Then one template per protocol (never reuse), following `DHMS_GT` / `CHMS_GT` → `MHMS_GT` / `RHMS_GT` /
+`HHMS_GT`.
+
+**Pre-flight all green:** 3 numeric columns with 0 non-numeric tokens (no `corrections:` needed),
+batch-id format 3/3, 0 missing in CDD. The CRO checker passes it **7/7** at recall 1.00 (runner-up PPB
+0.67) — first real file to exercise the HMS entry added on 2026-11-04.
+
+## CAUTION — `/protocols` PAGINATES and silently truncates (2026-11-06)
+
+**`GET /vaults/7108/protocols` answers `{'count': 72, 'page_size': 50, 'objects': [...]}`** — one GET
+returns **50 of 72**. A protocol past the first page is invisible and reads as "not in the vault".
+
+**Found the hard way:** the three hepatocyte protocols created on 2026-11-06 did not appear in a plain
+listing; the list still said "50". Every earlier "checked all 50 protocols" claim in this wiki rested on
+a truncated read and has been corrected in place. Those conclusions happened to be right — the assays
+really were absent — but the method could not have proved it. **22 protocols were invisible**, mostly
+UBR/FP/competition assays plus the three new ones.
+
+**Fixed in code:** new `import_to_protocol._all_objects(session, url, page_size=100)` walks pages until
+`count` is reached; `list_protocols` uses it. `--list-protocols` now reports **72**, not 50.
+
+**Which endpoints paginate (measured, not assumed):**
+
+| endpoint | shape | pages? |
+|---|---|---|
+| `/protocols` | `count`/`page_size`/`objects` | **YES — 72 with page_size 50** |
+| `/runs?protocols=<pid>` | `count`/`page_size`/`objects` | yes (page_size 50) |
+| `/batches` | `count`/`page_size`/`objects` | yes (19796 total) |
+| `/mapping_templates` | **bare list** | no — the 81 seen is the whole set |
+
+Existing callers were already safe: `get_protocol_data.run_dates` / `protocol_rows` use `_paginate`, and
+`missing_batches` queries one identifier at a time. **A bare-list endpoint today may gain paging later —
+check for a `count` key rather than trusting a returned length.**
+
+## Hepatocyte panel complete — 5 species configured (2026-11-06)
+
+Mouse **138102**, rat **138103**, human **138104** created, each with the canonical 9 readouts, correct
+units and ids verified live. Config blocks added: `mhms`/`MHMS`, `rhms`/`RHMS`, `hhms`/`HHMS`. Detection
+now returns a **5-way** hepatocyte species group
+`{'Dog': 137788, 'Monkey': 137942, 'Mouse': 138102, 'Rat': 138103, 'Human': 138104}`, and all three split
+CSVs map `mapped=10, mapping_ok=True`. 20 aliases, no duplicates, no readout-id overlap. 78 tests pass.
+
+**138104 (human) shipped with an EMPTY Species picklist — caught before the first import and FIXED
+2026-11-06.** Its `Species` readout (2025941) carried no `pick_list_values` key at all, while mouse had
+`['Mouse']` and rat `['Rat']`; the readout is `required`, so every Human row would have been rejected with
+`Readout "Human" rejected. Value must match readout definition pick list.` The operator added `Human`
+before building the template, so no import ever failed. This is the second picklist defect in three weeks
+(cf. the dog microsomal protocol on 2026-10-29) — the API picklist read is what caught it both times.
+
+**Templates built and wired 2026-11-06:** `MHMS_GT` (62347 → 138102), `RHMS_GT` (62345 → 138103),
+`HHMS_GT` (62348 → 138104). All three verified — 10 header mappings each, identifier on
+`Molecule-Batch ID`, every readout id belongs to its own protocol, and **template ids == config ids**.
+
+**The picklist is now a standing check on any new protocol.** Twice in three weeks a freshly created
+protocol has shipped with the wrong or missing Species value, and `--describe-protocol` does NOT print
+picklist values — read `readout_definitions[].pick_list_values` from the API before the first import.
+
+## 20 importable protocols, all templated and audited (2026-11-06)
+
+Hepatocyte stability is complete across **5 species** (dog 137788, monkey 137942, mouse 138102,
+rat 138103, human 138104), each with its own `*HMS_GT` template. `config.yaml` now holds **20 importable
+protocols, every one templated**, 20 unique aliases, no readout-id overlap, and the only remaining TODOs
+are `notifications.tenant_id` / `.client_id`, both waiting on IT.
+
+**Two audits run across the whole config, both clean:**
+* **Template binding (20 protocols)** — every template targets its own protocol and every readout id in it
+  belongs to that protocol. This is the audit that matters most: `build_payload` never sends a protocol
+  id, so a mis-bound template writes to the wrong place silently.
+* **Species picklist (10 PickList protocols)** — each accepts exactly its own species value.
+
+**CAUTION — the species picklist is NOT a safety net on PPB.** The 6 PPB protocols type `Species` as
+**Text**, not PickList, and the readout is not `required`. A Text field accepts ANY string, so a
+wrong-species row sent to a PPB protocol is **stored, not rejected**. The microsomal (5) and hepatocyte
+(5) protocols are PickList + required and do reject. A first pass of the audit flagged the 6 PPB
+protocols as "EMPTY picklist" — that was the audit's fault for not checking `data_type` first, not a
+defect. **Check `data_type` before reading `pick_list_values`; an absent picklist on a Text readout means
+nothing.**
+
+Full sweep of the current reports — HMS (both), MMS (both), TSY, Caco-2 — every species routes to a
+configured protocol and every unit maps `ok=True`. 78 tests pass.
+
+## Mouse PK Cassette (137872) — reports have NO Upload tab; source traced (2026-11-09)
+
+**Protocol 137872 `Mouse PK Cassette`** (category DMPK), 24 readouts. Config block added: alias `mpk`,
+label `MPK`, identifier `Molecule-Batch ID`, keys = the 24 names in `data/uploads/20261109_MPK4/MPK_fields.txt`
+(verified identical), every id live. `mapping_template:` commented out — no template yet. **No `species:`
+field**: MPK is one protocol, not a species split.
+
+**Source of every upload value — traced on `older_MPK_with_upload.xlsx`** by matching its Upload values to
+the report LOCALLY and printing only labels and booleans, never values. Its Upload tab is mostly pasted
+values, but 4 cells are formulas (`='PK Report'!$F$68` etc.) that pointed at the source tab.
+
+| upload field | source in the `PK Report` tab |
+|---|---|
+| Molecule-Batch ID | r20 `Batch No.` (full `SRB-XXXXXXX-NNN`) — NOT r10/r19, which are molecule ids |
+| Study number | r8 `Study No.` |
+| Date | r15 **`In-life start date`** — NOT r16 `Report date` |
+| Species / Strain / Gender | r9 `Species`, ONE composite string, e.g. `Male BALB/c Mouse, Fed` |
+| Route | r11 `Study Group` with the group number stripped (`IV bolus1` -> `IV bolus`, `PO2` -> `PO`) |
+| Dose | r12 `Nominal dose` or r13 `Administered dose` (the old Upload carried both) |
+| Formulation | r14, one per group |
+| all PK parameters | the **Mean** column of each group's `PK Parameters` table, matched by LABEL |
+
+**`PK Report` layout:** a study header in rows 5-27 (labels col B, values from col C), then one block per
+analyte titled `Pharmacokinetics of <id>`. Each block has two side-by-side groups: IV on the left
+(labels col B, **Mean col F**) and PO on the right (labels col J, **Mean col N**). Each group has a
+time-concentration table, then a `PK Parameters` table. Label map: `C0 (ng/mL)`, `Cl(mL/min/kg)`,
+`Vdss (L/kg)`, `Cmax (ng/mL)`, `Tmax (h)`, `T1/2 (h)`, `Tlast (h)`, `AUC0-last`, `AUC0-inf`,
+`MRT0-last (h)`, `AUCExtra (%)`, `Bioavailability (%)a` (PO only). Lookup must be BY LABEL — IV and PO
+list their parameters in different orders. Mean cells can hold `ND` or `--`, which a numeric readout
+rejects; they must become blank.
+
+**The older reference file is NOT a cassette.** It is one compound in a dose escalation (3 IV + 3 PO
+groups, 1 distinct compound). **All 6 newer reports ARE 4-in-1 cassettes** with an identical layout:
+groups `IV bolus1` + `PO2`, 4 analytes listed in r19/r20 (cols C-F), r10-r13 with 8 columns (4 compounds x
+2 groups), 4 PK blocks. **4 analytes x 2 routes = 8 upload rows per file, 48 in total.**
+
+**Other sources:** the `Dose` tab carries `Nominal Conc. (mg/mL)` per test article and route, a clean
+source for `Concentration (mg/mL)`. **No tab in any report carries a dosing volume**, so
+`Dosing Volume (mL)` cannot be filled from these reports. Strain, gender and fed state exist ONLY inside
+the composite r9 string.
+
+**Required flags — FIXED by the operator 2026-11-09, one still open.** 14 of 24 readouts were `required`,
+including IV-only C0 / Clearance / Vdss and PO-only Cmax / Tmax / Bioavailability, so every row of a
+one-row-per-route upload left 3 required readouts blank; T1/2 can be `ND`. CDD's docs do not say whether a
+blank required readout is rejected (text in a numeric readout IS), and slurps run `autoreject=true`. The
+operator un-required those 7 (verified via the API). **Still required (7):** Study number, Date, Species,
+Strain, Route, Formulation, **AUC(last)** — and AUC(last) is `ND` in 3 generated rows, see below.
+
+**Decisions (operator, 2026-11-09):** Dose = **nominal** (WuXi computes PK with it: *"Dose used (WNL
+calculation): Nominal Dose"*); the fed state from the species string goes to **Comment**; `Analyte` = the
+r19 analyte molecule id; the older dose-escalation report is **NOT uploaded** — it is not cassette PK and
+does not belong in 137872 (it is also another sponsor, 426354). Defaults accepted without objection:
+`Concentration` from the Dose tab's nominal conc., Route `IV bolus` / `PO`, `ND`/`--` written blank, Date
+as ISO `YYYY-MM-DD`, `AUC (%)` = WuXi's `AUCExtra (%)` (percent of AUC extrapolated).
+
+**Privacy slip (2026-11-09):** one listing printed raw sheet names, and three newer reports embed a
+molecule id in a tab name (`Raw Data_SRB-...`). That sent 3 molecule ids off the machine — no values, no
+structures. **Tab names must be redacted like cell text** — a CID regex on `ws.title` before printing.
+
+## `mpk_to_upload.py` — MPK report -> upload CSV, validated 90/90 (2026-11-09)
+
+**New module `python/mpk_to_upload.py`.** `report_rows(path, block)` reads the `PK Report` + `Dose` tabs and
+returns `(header, rows, blanked)`: one row per (analyte, dosing group), columns = identifier + the block's
+readouts in config order. Every label lives in the `report:` section of protocol 137872 in `config.yaml`
+(sheet names, header labels, the `species_pattern` regex, the 12-entry PK label map, Dose-tab columns), so
+a changed WuXi layout is a config edit. CLI: `python python/mpk_to_upload.py <report.xlsx>... [--dry-run]`
+writes `<report>_upl.csv` beside each; stdout = row counts and blanked tokens only.
+
+**How it finds things, by label not by fixed row:** study header = col-B labels above the first block;
+group columns run right from col C while the nominal-dose cell is a number (this stops at the
+PK-settings labels beside them, which a "first blank" rule does NOT — in the cassettes there is no blank
+column between the groups and `Program`); a merged formulation cell is forward-filled within its group;
+each `PK Parameters` table takes its group from the nearest group name above it IN ITS OWN COLUMN and its
+analyte from the nearest block title above. So it does **not** assume "left = IV, right = PO" — the older
+report pairs groups as IV|IV, IV|PO and PO|PO, and it reads those correctly.
+
+**Validation against WuXi's hand-made Upload tab (older report, in memory, never written):** rows paired on
+(batch id, route, nominal dose) because that study has one compound at 3 doses per route; only the fields
+BOTH formats carry were compared, old column names renamed to new; Species compared as the re-joined
+Gender + Strain + Species + Comment; numbers compared numerically; old `ND` vs new blank counted as a match.
+**Result: 6/6 rows paired, 90/90 fields matched, 0 mismatches** (2 of the matches were ND-vs-blank). NOT
+covered: Concentration, Dosing Volume, Tlast, MRTlast, AUC (%), Analyte (no column in the old Upload),
+and the multi-analyte joins — the older report has one analyte.
+
+**The 6 cassette CSVs** (`data/uploads/20261109_MPK4/*_upl.csv`, 8 rows each, 48 total). Checks that cover what
+the validation could not: 4 analytes x {IV bolus, PO} per file, (batch, route) unique, each batch id's
+molecule part equals its `Analyte` (r19 <-> r20 aligned), detection `single:137872`, `mapping_ok=True`,
+**0 batch ids missing in CDD**, 0 text tokens in numeric columns, UTF-8-BOM, and the `mg/mL` in every
+formulation string **equals the Dose-tab concentration in 48/48 rows** (cross-checks the concentration
+source). `Tlast` is blank on every IV row — WuXi reports the IV Tlast Mean as `ND`.
+
+**RESOLVED 2026-11-10 — the operator un-required AUC(last) too** (verified via the API). It was blank in
+3 rows (2026092103: 1, 2026092801: 2). They are PO arms where
+Cmax, Tmax, T1/2, AUC and F are ALL `ND` — no measurable oral exposure. With `autoreject=true` a rejected
+row fails its whole slurp. Options: un-require AUC(last) like the other 7, or leave those 2 files out.
+**Note on meaning:** a blank cannot tell "not detected" from "not measured", so writing ND as blank loses
+the "no oral exposure" result — recording it in `Comment` would keep it. Not done — the operator decides.
+
+**Template:** build `MPK_GT` from `..._2026100802-MPK_4 compounds_20261029_upl.csv` — one of the two newest
+files, no required blanks, and the fewest blanked cells (only the 4 IV Tlast).
+
+**Tests:** 8 new `MpkToUploadTests` on a synthetic 2-analyte cassette workbook (fake `TEST-` ids) driven by
+the REAL `report:` map — rows per (analyte, route), header order, Mean-by-label, ND blanked and counted,
+unmapped `Rsq_adj` ignored, species split, merged formulation, ISO date, Dose-tab concentration, and an
+unparseable species string raising instead of guessing. **86 tests pass.**
+
+## Renaming a protocol in CDD does NOT break uploads — verified on MDR1 (2026-11-10)
+
+The operator renamed 131399 to **`MDR1-MDCK II (inh)`** in CDD and set the same `name:` in config. Checked
+end to end, short of committing data:
+
+* **Templates bind by readout ID, not by name.** `MDCK-MDR1` (58547) now REPORTS
+  `protocol_name: 'MDR1-MDCK II (inh)'` — CDD resolves the name live, so a rename flows through by itself.
+  All 26 template readout ids still belong to 131399 and equal the config ids.
+* **No code in this repo selects or routes by protocol name.** Every use of `name` is display text (the
+  webapp dropdown and labels, the email body, detection output, `_group_name` for species groups). Routing
+  uses the PID and readout ids, and `build_payload` sends `{project, mapping_template, autoreject, runs}` —
+  **no name and no PID at all.**
+* **Webapp, real code path:** the `/api/upload` endpoint was called directly with real MDR1 reports (an
+  async function given a starlette `UploadFile`; `httpx`, which FastAPI's TestClient needs, is not
+  installed). Both came back `protocol_name='MDR1-MDCK II (inh)'`, `mapping_ok=True`, 0 unknown batches, and
+  **`already-uploaded`** — the duplicate guard fetched 131399's data under the new name and matched the
+  September rows. The dropdown lists the new name.
+* **CLI:** `--dry-run` on the webapp's converted CSV → mapping check under the new name, `mapped=27`,
+  `Molecule Name` ignored, `mapping_ok=True`; payload `{project: FBXO31, autoreject: true,
+  mapping_template: MDCK-MDR1}`.
+* **Whole config:** binding audit over all **21** templated protocols ALL CORRECT; config `name:` matches
+  CDD for all 21. 86 tests pass.
+
+**What a rename CAN break:** only the config `name:` going stale (display, and the `_group_name` label of a
+species group). So after renaming in CDD, update `name:` — exactly what the operator did — and re-run the
+name check. A renamed **mapping template** is different: config references templates BY NAME
+(`mapping_template:`), so renaming a template in CDD breaks the upload until config follows.
+
+## MPK template built — `MPK_Cassette_GT` (2026-11-10)
+
+`MPK_Cassette_GT` (62418): 25 header mappings = 24 readouts + `Molecule-Batch ID`, template ids == config
+ids. Built from `2026100802` as recommended — identified by comparing batch sets locally (4/4 overlap with
+the committed rows; the other 5 CSVs 0/4). **137872 holds 8 rows in 1 run, 0 empty runs.** The other 5 CSVs
+share no batch with the committed file, so the CLI loop that skips `2026100802` cannot duplicate it.
+
+## Mouse PK split by ROUTE into two protocols (2026-11-12)
+
+**Why:** one protocol held 2 rows per compound (IV + PO). The operator split it: **137872 renamed
+`Mouse PK Cassette IV`** (same id, same readout ids, so `MPK_Cassette_GT` still binds it) and **138367
+`Mouse PK Cassette PO`** created as a full copy — 24 readouts, identical names / types / units / required
+flags, new ids 2031815-2031838. Both were **empty** at the split (137872's 8 rows and their run had been
+removed), so nothing was misfiled.
+
+**`Route` was Text at the split — CHANGED to a required PickList 2026-11-12** (IV `['IV bolus']`, PO
+`['PO']`), see the 2026-11-12 PickList section below. Before that change CDD would NOT reject a PO row sent
+to the IV protocol; now it does.
+
+**Config:** each block carries `route:` (`"IV bolus"` / `"PO"`), the same idea as `species:`. The two blocks
+share ONE `report:` label map through a YAML anchor (`report: &mpk_report` on IV, `report: *mpk_report`
+on PO) — PyYAML resolves both to the same object, so a label fix applies to both routes. Aliases
+`mpk_iv` / `mpk_po`, labels `MPK IV` / `MPK PO`. The PO readout ids were checked against the API: every
+config key maps to the same CDD readout NAME in IV and PO.
+
+**Converter:** `report_rows` keeps only the groups whose route equals the block's `route:` (no `route:` =
+all groups, which is what the validation uses). The CLI now writes one `<report>_<route>_upl.csv` per
+block that has a `report:` map (`_IV_bolus` / `_PO`, via `split_species._safe`) and **warns when a row's
+route matches no block**, so a new route such as `SC` cannot vanish silently. `--protocol` still forces one
+block.
+
+**Verified:** the 90/90 validation against WuXi's hand-made Upload tab still passes after the change. The
+12 route CSVs: every row on its own route, **0 values from the other route** (IV files carry no
+Cmax/Tmax/F, PO files no C0/CL/Vdss), IV + PO == the combined file row for row, `mapping_ok` against the
+right block, 0 batch ids missing in CDD, 0 bad numerics, 0 required blanks. **Across all 6 reports: 24 IV
+rows = 24 distinct batches, 24 PO rows = 24 distinct batches — one row per compound per protocol.** IV CLI
+`--dry-run` passes. 89 tests pass (3 new: route filter, no loss/no duplication, shared map).
+
+**Folder renamed** `data/uploads/20261109/` -> `data/uploads/20261109_MPK4/` by the operator; paths in this
+wiki updated. The 6 combined `<report>_upl.csv` files from 2026-11-10 mixed both routes; **deleted 2026-11-12 with the
+operator's OK**. The folder now holds only the 12 route CSVs, the 6 reports, `MPK_fields.txt` and the
+older reference report. Still use the explicit route globs, never a bare `*_upl.csv`. The operator chose
+to KEEP all 24 readouts on both protocols (IV always has empty Cmax/Tmax/F, PO empty C0/CL/Vdss).
+
+**Templates:** IV = `MPK_Cassette_GT` (ready). PO = `MPK_Cassette_PO_GT` still to build from one `_PO_upl.csv`;
+`mapping_template:` is commented out on 138367 until it exists.
+
+## The webapp could not take MPK files — SUPERSEDED the same day, see the Upload-tab section below (2026-11-12)
+
+Tested by calling the real `/api/upload` endpoint function (read-only, nothing submitted):
+
+* **An MPK report (.xlsx)** → a clean `error` unit: *"no 'Upload' sheet in raw_<hex>.xlsx; found: …"*.
+  Harmless, but nothing imports. (The message names the TEMP file, not the user's file — a small wart.)
+* **A route CSV** → **uncaught `zipfile.BadZipFile` → HTTP 500.** The endpoint writes every dropped file
+  to `raw_<hex>.xlsx` and calls `read_upload_sheet`, catching only `UploadSheetError`. openpyxl cannot open
+  a CSV, so the whole request fails — **including every other file in the same drop.** Pre-existing bug,
+  not MPK-specific: any non-xlsx file triggers it. The click-to-choose picker filters to `.xlsx`/`.xlsm`,
+  but `accept=` does NOT filter drag-and-drop and `app.js` has no extension check.
+
+**Even with CSV support, MPK would be awkward in the webapp:** the IV and PO blocks have identical
+columns, so `detect_protocol` ties them with no `species:` field → `ambiguous` → a manual protocol pick
+per unit, and `Route` was Text then, so CDD would not have caught a wrong pick (it is a PickList now).
+
+**Two options offered, neither built yet:** (a) catch non-xlsx files in `/api/upload` and return an error
+unit instead of a 500; (b) let the webapp take the RAW MPK report — when a workbook has no `Upload` tab
+but matches a block's `report:` map, run `mpk_to_upload.report_rows` once per route block and stage one
+unit per route (IV → 137872, PO → 138367) behind the existing guards (mapping check, batch registration,
+duplicate guard). (b) removes the CSV step entirely and makes (a)'s crash unreachable for MPK.
+
+## MPK reports get an Upload tab -> drag-and-drop works, split by ROUTE (2026-11-12)
+
+**Request:** add an `Upload` tab with the 24 fields to the MPK reports so they can be dragged into the
+webapp, and make that tab the format WuXi produces from now on. **7 reports** (the 6 plus
+`2026102903`, added mid-task) -> copies in **`data/uploads/20261109_MPK4/corrected_xlxs/`** (the
+operator's folder name, spelled as given). The originals are untouched.
+
+**Why copies, and why ZIP-level injection:** every report carries **14 charts, 5 drawings, 2 images and
+1 embedded object**, and an openpyxl load+save DROPS charts. So `mpk_to_upload.add_upload_sheet(src, dst,
+header, rows)` edits the xlsx zip directly: it adds one `xl/worksheets/sheetN.xml` and patches only
+`xl/workbook.xml`, `xl/_rels/workbook.xml.rels` and `[Content_Types].xml`; every other part is copied
+byte-for-byte. **The tab is appended LAST on purpose:** each workbook has 2-3 defined names (print areas)
+addressed by sheet POSITION (`localSheetId`), and inserting first would shift them onto the wrong tabs.
+Nothing reads the tab by position — the webapp and the checker find it by name. It refuses to add a
+second `Upload` tab. The values are written as numbers, or as inline text (no sharedStrings edit needed).
+CLI: `mpk_to_upload.py --upload-tab DIR <reports>` (also writes the route CSVs as before).
+
+**Verified on all 7 copies:** zip integrity OK, exactly 1 part added, 0 parts lost, every other part
+byte-identical, chart/drawing/image/embedding counts unchanged, sheets = original + `Upload`, and the
+Upload tab reads back EXACTLY what the converter produced (8 rows x 25 cols). **Independent check:**
+LibreOffice (installed at `/usr/bin/soffice`) opened and re-saved all 7 headless — using a throwaway
+`-env:UserInstallation` profile in the scratchpad, so the operator's LibreOffice settings are untouched —
+kept every sheet, and read Upload back as 8 x 25. The re-run left the 12 existing route CSVs
+byte-identical and added the 2 for `2026102903`.
+
+**Webapp + detection — a ROUTE group, the twin of the species group:** `_score_block` carries the block's
+`route:`; when tied blocks all carry one, `detect` returns `route_group` with `route_pids`
+(`{'IV bolus': 137872, 'PO': 138367}`) instead of `ambiguous`. `split_species(header, rows, column)` now
+splits on any column (default `species`). `/api/upload` stages one unit per route, and `app.js` shows
+`route: PO` beside the file name. (Later the same day the per-unit `route` field became a generic
+`split` label — e.g. `route: PO`, `cell line: MDCK II` — see the MDCK section.) `_group_name(tied, by=...)` labels it `Mouse PK Cassette (route split)`.
+
+**End-to-end on the real endpoint:** a dropped corrected copy -> `route_group` -> IV unit (137872, 4 rows,
+`mapping_ok`, 0 unknown batches, **ready**) + PO unit (138367, same, **needs-selection** — no PO template
+yet).
+
+**CAUTION — the Submit gate needs EVERY unit resolved** (`ready` or `already-uploaded`). While the PO units
+lack a template they block Submit for the whole drop, IV included. **Build `MPK_Cassette_PO_GT` first.**
+After that, one drop of all 7 copies submits both routes; the PO rows the template wizard already
+committed show `already-uploaded` and are skipped by the duplicate guard — no skip-by-name needed.
+
+**Checker:** new `MPK` entry, `Mouse PK (IV + PO)` — 24 columns, 15 numeric, with its column lists
+GENERATED FROM CONFIG so the two cannot drift. New generic `values:` check: `Route` must be exactly
+`IV bolus` or `PO` on every row, because routing is an exact string match. (Since 2026-11-12 CDD's
+Route picklist also rejects other spellings — the checker catches them at WuXi's desk, BEFORE upload.) A rule line for WuXi says the same, and to leave a cell empty rather than writing
+`ND`. Verified: all 7 copies pass 8/8 at recall 1.00 (runner-up 0.44); originals fail (no Upload tab); a
+row mutated to `IV` FAILS with a clear message; HMS / MMS / TSY / Caco2 / MDR1 reports still detect
+correctly (MPK scores <= 0.17 on them). Re-audited: 0 "CDD", 2 "Serac" (the MDR1 column names), 0
+network primitives, 26,347 bytes.
+
+**97 tests pass** (8 new: route group + split + real-config route_pids; sheet injection with a REAL
+chart surviving byte-for-byte, tab appended last and read back, refusal of a second tab, numeric text).
+
+**Two method lessons:**
+* **The scratch regression harness vanished between sessions** (the scratchpad is cleared). Its run then
+  printed only `Node.js v18...` — a crash — which a `tail -1` made look like output. Recreated from the
+  last-known-good expectations, and it now FAILS when fewer than 9 reference files are found. Read the
+  full output of a test run, not its last line.
+* **A shell `join` on `md5sum` output broke on the spaces in the MPK filenames** (`cassette 4 in 1`) and
+  reported "0/12 unchanged". Re-done in Python with `split(maxsplit=1)`: 12/12 byte-identical. Never
+  field-split filenames that contain spaces.
+
+## MPK `Route` is now a required PickList; 8th report added (2026-11-12)
+
+**Operator change:** `Route` on both MPK protocols went from Text to a **required PickList with ONE value
+each** — 137872 IV `['IV bolus']`, 138367 PO `['PO']`. **Changed in place: the readout ids did NOT move**
+(2020823 / 2031818), so config is still valid (0 stale ids) and `MPK_Cassette_GT` still binds 137872 with
+identical ids — the template now reports Route as `PickList ['IV bolus']` by itself. Both protocols were
+still EMPTY (0 rows, 0 runs), so no stored data had to be converted.
+
+**What it buys:** the species-picklist safety property, now for route — **CDD REJECTS a PO row sent to the
+IV protocol, and vice versa.** The picklist values are exactly the strings the converter writes, so no
+code or config change was needed. Before converting a readout's type, still check the id afterwards: a
+delete-and-recreate would have changed it and silently broken both config and the template.
+
+**8th report** `2026_11_12_…2026110201-MPK_cassette 4 in 1_20261112.xlsx`: same layout, 4 IV + 4 PO,
+every row routed (1 `ND` blanked, PO Tlast). Corrected copy written to `corrected_xlxs/` (now **8**), plus
+its 2 route CSVs (now **16**). Same proofs as the first seven: 1 part added, 0 lost, every other part
+byte-identical, 14/5/2/1 charts/drawings/images/embeddings kept, Upload reads back exactly, and LibreOffice
+opens it (7 sheets, Upload 8 x 25). Pre-flight against the NEW picklists: IV rows all `IV bolus`, PO rows
+all `PO`, mapping ok, 0 batches missing in CDD. **Its 4 compounds appear in none of the earlier 7 reports
+— across all 8 reports (32 compounds) there is still one row per compound per protocol.** Checker: pass
+8/8; webapp drop: IV `ready`, PO `needs-selection` until the PO template exists.
+
+**PO template DONE 2026-11-12 — `MPK_Cassette_PO_GT` (62523):** 25 header mappings = 24 readouts +
+`Molecule-Batch ID`, targets only `Mouse PK Cassette PO`, template ids == PO config ids, Route mapped as
+`PickList ['PO']`. Built from `2026092101`'s PO rows (138367: 4 rows, 1 run). Config line set by the
+operator; stale TODO comment cleared.
+
+**Full drop simulated on the real endpoint — all 8 corrected copies in ONE call:** 8 files -> 16 units;
+IV 8x `ready`; PO 7x `ready` + **1x `already-uploaded` (`2026092101`)** — the duplicate guard recognised
+the template wizard's committed rows on its own, from CDD's data, so no skip-by-name is needed. Every unit
+on its own protocol, all `mapping_ok`, 0 unknown batches. Submit gate (same rule as `app.js`): all
+resolved, 15 ready -> **ENABLED**.
+
+**Whole config:** binding audit over all **22** templated protocols ALL CORRECT; config names match CDD for
+all 22; **no protocol is left without a template.** The only TODOs in `config.yaml` are the two IT ones.
+97 tests pass.
+
+## MDCK II (138368) vs MDR1-MDCK II (131399) — routed by the Cell line VALUE (2026-11-12)
+
+**New protocol 138368 `MDCK II (inh)`** (wild-type MDCK II, no MDR1 transfection). It is **structurally
+identical to 131399** — same 26 readouts, types, units, required flags (none required) — so columns alone
+can never tell them apart. `Cell line` / `Cell line - PgP inhibitor` are **Text, no picklist** on both.
+
+**The discriminator, measured on real reports:** all 7 MDR1 reports on disk say `Cell line` =
+`MDR1-MDCK II` (inhibitor arm `MDR1-MDCK II+ PgP inhibitor`); the first MDCK II report
+(`data/uploads/20261112_MDCK/…MDCK_v1_report_4 cpds.xlsx`) says `MDCK II`, and its 13 inhibitor-arm
+columns are ALL blank — the inhibitor arm was not run.
+
+**HAZARD FOUND (fixed): before this change the webapp sent the MDCK II report to MDR1 and marked it
+`ready`.** Only 131399 had that column layout, so detection said `single` -> 131399; one Submit would have
+filed wild-type MDCK II data as MDR1 data, and CDD would have accepted it (Text cell line).
+
+**How it routes now — the third split key, and detection is table-driven:** `SPLIT_KEYS = ("species",
+"route", "cell_line")` in `detect_protocol.py`. `_score_block` carries every key; `detect` loops over them
+and returns `<key>_group` + `<key>_pids` for the first key all tied blocks declare (statuses
+`species_group` / `route_group` keep their names). Config: `cell_line: "MDR1-MDCK II"` on 131399,
+`cell_line: "MDCK II"` on 138368. The webapp has ONE branch for every non-species split: it splits on the
+column named by the key (`cell_line` -> `Cell line`) and looks the value up with
+**`convert_upload.split_key`** = Unicode NFKC + case/space-insensitive, so the older spelling
+`MDR1-MDCKⅡ` (a single Roman-numeral character) still routes to MDR1. An unknown value (e.g. `MDR2-MDCK
+II`) gets no pid and falls to manual selection, never silent routing. The per-unit label is now a
+generic `split` (`route: PO`, `cell line: MDCK II`); `/api/recheck` passes it through. **Cache-buster
+`?v=2026-11-12-2`.**
+
+**BUG FOUND AND FIXED — precision can pick a winner before the value split runs.** 138368 was first
+given the un-prefixed identifier `Molecule-Batch ID`. Detection scores precision on readouts +
+identifiers, so on any report using that spelling 138368 explained one more column (27/27 vs 26/27) and
+won as `single` — the MDCK report landed right BY ACCIDENT, and **two older MDR1 reports
+(`426354-…`, un-prefixed) were sent to MDCK II.** Fix: 138368 now has 131399's identifier exactly
+(`Batch Molecule-Batch ID`; the webapp's `reconcile_identifier` renames the un-prefixed spelling). Since
+then all 8 MDCK/MDR1 reports go through `cell_line_group`: MDCK -> 138368, all 7 MDR1 -> 131399
+(`already-uploaded`), for BOTH identifier spellings. **Rule, now a test:** blocks that split one column
+layout must be identical except for their split value —
+`test_split_groups_differ_only_in_the_split_value` checks it across the real config (5 groups: PPB 6,
+microsomal 5, hepatocyte 5, MPK 2, MDCK 2).
+
+**The picklist question.** A CDD picklist does NOT do the recognition — routing happens in our code
+before anything reaches CDD; the picklist is the safety net behind it (as with Species and Route).
+* **138368: recommended** — `Cell line` PickList `['MDCK II']`, and make it required (a picklist on a
+  non-required readout lets a blank through). It is empty, so this is as safe as the Route change.
+* **131399: NOT yet.** Its 182 stored rows hold 5 `Cell line` values: `MDR1-MDCKⅡ` x108 (Roman numeral,
+  older reports; their inhibitor-arm value also reads `…PgP inhinitor`, a WuXi typo), `MDR1-MDCK II` x71,
+  `MDR2-MDCK II` x1, `MDR3-MDCK II` x1, blank x1. What CDD does to non-matching stored values on a
+  Text -> PickList conversion is unknown (refuse? add them all to the list? blank them?). Decide on the 110
+  legacy rows first, and back the protocol up before converting.
+
+**Checker:** the MDR1 entry now reads `MDCK II / MDR1-MDCK II permeability (± PgP inhibitor)` and gained
+`values: {"Cell line": ["MDR1-MDCK II", "MDCK II"]}` plus a rule line for WuXi. The MDCK report passes; the
+old `MDR1-MDCKⅡ` spelling and a blank cell line FAIL. Regression still ALL 9; MPK unaffected.
+
+**DONE 2026-11-12 — template `MDCK_GT` (62524) built and the first report uploaded.** Built from
+`data/uploads/20261112_MDCK/…MDCK_v1_report_4 cpds_upl.csv`: 27 header mappings = 26 readouts + `Batch
+Molecule-Batch ID`, targets only `MDCK II (inh)`, template ids == config ids. 138368 holds the whole
+report: **4 rows, 1 run, 0 empty runs.** Re-dropping the report on the real endpoint gives `cell line:
+MDCK II -> 138368 already-uploaded` — the duplicate guard reads the new protocol.
+
+**The operator added the picklist on 138368: `Cell line` = `PickList ['MDCK II']`, readout id UNCHANGED
+(2031882)**, so config and template stay valid. It was left NOT required, so CDD would still accept a
+BLANK cell line there. In practice a blank never reaches CDD through the webapp: the checker fails it at
+WuXi's desk, and `split_species` drops a row whose split value is blank. CAUTION — that drop is SILENT
+(pre-existing behaviour since the species split), so "required" is the only CDD-side guard against it.
+
+**Whole config:** binding audit over all **23** templated protocols ALL CORRECT; config names match CDD
+for all 23; no protocol is left without a template; the only TODOs are the two IT ones. 101 tests pass.
+
+**Checker, final MDCK touch:** a passing `values:` check now reports where the rows will be filed — e.g.
+`Rows: MDCK II ×4`, `Rows: MDR1-MDCK II ×4`, `Rows: IV bolus ×4 · PO ×4` — so WuXi sees the split, not
+just a tick. Verified: whole-page `node --check` OK, regression ALL 9, the three negatives still FAIL,
+re-audited (0 "CDD", 2 "Serac", 0 network primitives, 26,732 bytes).
+
+**Not configured, worth knowing:** 134460 `MDR1-MDCK (PROTACs)` has the SAME 26-column layout and would
+carry the SAME cell line value (`MDR1-MDCK II`) — the cell line cannot separate it from 131399. If it is
+ever configured, it needs a different discriminator.
+
+**Method lesson — syntax-check the WHOLE page after an HTML edit.** An edit left a doubled `]]` in the
+checker's protocol list, which would have broken the page for WuXi. The test core only covers the logic
+half (up to `async function inflate`), so it could miss an error in the display half. Now run on every
+edit: extract the `<script>` body and `node --check` it.
+
+**101 tests pass** (4 new: NFKC split key, synthetic cell-line group, real config ties for BOTH identifier
+spellings, and the split-group invariant).
+
 ## Post-commit verification (check_cdd_commit.py, 2026-07-16)
 - **Purpose:** automate the manual "did it really upload?" check. For each committed workbook: detect protocol (+ species split) → fetch CDD protocol data → per compound, confirm a committed row EXISTS and numeric readout VALUES match. Webapp runs it automatically after commit (`POST /api/verify`) and flips rows + the Submit button to **azure "SUCCESS"** (`--azure #2f7bb5`); CLI returns SUCCESS/fail exit code.
 - **Match key (verified 2026-07-16):** file `Molecule-Batch ID` == CDD batch `molecule_batch_identifier`. Protocol-data rows carry `batch` as a **numeric id**, not the SRB string — map via `GET /vaults/{v}/batches?batches=id1,id2` → `molecule_batch_identifier`. (`molecule` and `run` are also numeric ids.)
@@ -1073,7 +1657,7 @@ zero network primitives, 24,509 bytes.
 - **`get_df(collections=[])` = fetch ALL collections** (empty list, not `None`). CLI equivalent `--all-collections`. `collections=None` still errors. _[2026-06-26]_
 - **Import file is streamed, never read:** `import_to_protocol.py` hands CDD a binary file handle; the script (and assistant) never parse data rows. `--check-mapping` reads the **header row only** (column names = schema = allowed), never values.
 - **Per-protocol import mappings live in `config/config.yaml`** (config-over-code). Keyed by PID. Three column groups: `identifiers` (the batch key CDD matches on), `ignore` (present-but-not-imported), `readouts` (column → readout id). `--check-mapping` is an offline pre-flight; it also auto-runs before a real import when `--protocol` is set and aborts on any UNMAPPED column.
-- **MDR1 protocol "MDR1-MDCK II Inhibitor" = PID 131399** (26 readouts, ids 1883900–1883930 non-contiguous). Identifier = **only** `Batch Molecule-Batch ID` (`SRB-XXXXXXX-NNN` embeds the molecule). Ignored columns: `Molecule Name`, `Run Lab`. Project = `FBXO31`, saved mapping template = `MDCK-MDR1`. With both in the config block, import is just `--protocol 131399 --file <path>`. _[2026-06-26; memory cdd_protocol_import_config]_
+- **MDR1 protocol "MDR1-MDCK II (inh)" = PID 131399** (renamed in CDD 2026-11-10; earlier "MDR1-MDCK II Inhibitor", then "MDR1-MDCK") (26 readouts, ids 1883900–1883930 non-contiguous). Identifier = **only** `Batch Molecule-Batch ID` (`SRB-XXXXXXX-NNN` embeds the molecule). Ignored columns: `Molecule Name`, `Run Lab`. Project = `FBXO31`, saved mapping template = `MDCK-MDR1`. With both in the config block, import is just `--protocol 131399 --file <path>`. _[2026-06-26; memory cdd_protocol_import_config]_
 - **Three ADME protocols configured (2026-06-26):** `LogD` PID **85979** (template `LogD_GT`, rebuilt 2026-07-07 from the new WuXi layout — old `LogD` template was stale and 422'd), `Thermodynamic Solubility` PID **86015** (template `TSY_GT`, rebuilt 2026-07-07 from the new WuXi layout — old `Thermosl upload` was stale), `Plasma protein binding (UC)` PID **125963** (template `PPB_GT`, rebuilt 2026-07-07 from the new WuXi layout — old `PPB` was stale). All project `FBXO31`. **Identifier = `Molecule-Batch ID`** — verified against the live CDD templates 2026-07-07 (the raw WuXi name, unchanged; NOT `Batch Molecule-Batch ID`, which is MDR1-only — I briefly set the `Batch ` prefix here and reverted it same day); `Run Lab` ignored if present. (The not-yet-migrated microsomal split files — hlm/mlm/rlm/caco2 configs — still use `Compound ID`+`Batch No`.) Assumption to confirm vs each template: `Comment`→Serac comment. Kinetic Solubility (PID 124033) exists but is not one of ours. **Import status (2026-07-07): all three ADME protocols COMMITTED** — LogD (`LogD_GT`), Thermodynamic Solubility (`TSY_GT`), Plasma protein binding UC (`PPB_GT`). Each stale original template 422'd "does not match file"; fix each time was: open the 422 edit URL → re-map by hand → save as a new `*_GT` template → update `mapping_template` in config. MDR1 committed earlier. All five WuXi files now imported.
 - **MMS (microsomal, human+mouse) split done (2026-06-26):** `python/split_species.py` (faithful port of the HTML tool's species split) — species col = header where trimmed.lower()=='species'; distinct species in first-seen order; per species = header + matching rows; junk/blank-species rows drop out; sanitised filename `<base>_<species>_upl.csv`; UTF-8 BOM. **Files created** in `data/uploads/`: `..._0+1+2_Human_upl.csv` + `..._0+1+2_Mouse_upl.csv` (5 rows each, species-pure). Standalone — no auth/network, reads header column names only, prints only species names + counts.
 - **Two microsomal-stability protocols configured (2026-06-26; migrated 2026-07-09):** `Microsomal stability species human` PID **88861** (template **`HLM_GT`**), `...mouse` PID **88862** (template **`MLM_GT`**) — both templates rebuilt 2026-07-09 for the new WuXi layout (old `Microsomal stability - human/mouse` were stale). Both project `FBXO31`, identifier **`Molecule-Batch ID`** (was `Compound ID`+`Batch No` pre-migration), ignore `Run Lab`, 10 readouts each incl. `species`→Species (PickList), `T½ (min)`→T½, `CLint (raw) (μL/min/mg)`→CLint (raw), two `Remaining …` cols, `Comment`→Serac Comment. Feed the split files (Human→88861, Mouse→88862). Both validate `mapping_ok=True`; both **committed 2026-07-09** via the webapp. Also present but not ours: microsomal **rat** PID 111161, MAO stability 124489. `Comment`→Serac Comment assumption as usual.
@@ -1086,7 +1670,7 @@ zero network primitives, 24,509 bytes.
 - **Protocol data extraction (`get_protocol_data.py`, 2026-06-26):** selects assays by the config `alias:` field (mdck/logd/hlm/mlm/rlm/solubility/ppb/caco2); `--experiments` omitted → all aliased. Design (user-chosen): **one merged wide table**, one row per compound joined on molecule id, **latest run per compound** (max `run_date`, tie-break run id), readout columns prefixed by alias (`logd_LogD7.4`, `ppb_%Unbound`), molecule cols (`name`,`smiles`, configurable via `--mol-columns`) once. Aliases live in config; caco2 (85977) is the last **extraction-only block** (alias+PID+name, no import mapping); rlm (111161) became importable 2026-10-29. Chemistry only in the CSV/DataFrame; stdout = counts/columns.
 
 ## Where things live
-- **Scripts:** `python/{get_library,download_cdd_structures,import_to_protocol,get_protocol_data,convert_dataset,split_species,convert_upload,detect_protocol,notify}.py`. Shared auth primitives (`load_token`, `make_session`, `API_BASE`, `get_with_retry`) live in `get_library.py` and are imported by `import_to_protocol.py` + `get_protocol_data.py`. `split_species.py`, `convert_upload.py`, `detect_protocol.py`, `notify.py` are offline (no CDD auth/network; `notify.py` does hit SMTP when enabled).
+- **Scripts:** `python/{get_library,download_cdd_structures,import_to_protocol,get_protocol_data,convert_dataset,split_species,convert_upload,detect_protocol,notify,mpk_to_upload}.py`. Shared auth primitives (`load_token`, `make_session`, `API_BASE`, `get_with_retry`) live in `get_library.py` and are imported by `import_to_protocol.py` + `get_protocol_data.py`. `split_species.py`, `convert_upload.py`, `detect_protocol.py`, `notify.py` are offline (no CDD auth/network; `notify.py` does hit SMTP when enabled).
 - **Webapp:** `webapp/app.py` (FastAPI, localhost-only) + `webapp/static/{index.html,app.js}`. Adds `python/` to `sys.path` to reuse the CLI modules; run from repo root: `conda activate cdd && python webapp/app.py`. Endpoints: `/api/protocols`, `/api/upload`, `/api/recheck`, `/api/submit`, `/api/status`, `/api/summary` (per-compound rollup), `/api/email-summary`. Loads config + modules ONCE at startup — restart after any config/code change. Frontend `app.js` is included with a `?v=YYYY-MM-DD` cache-buster in index.html — **bump it whenever app.js changes**, else browsers serve a stale cached app.js (symptom: a new server status like `already-uploaded` renders as the fallback "needs protocol" because old JS lacks the branch). Users pick up a version bump after one hard-refresh. Staging in a temp dir, cleared on exit. Deps in `requirements.txt`: fastapi, uvicorn[standard], python-multipart.
 - **Config:** `config/config.yaml` (vault id + per-protocol Slurps mappings; microsomal blocks carry a `species:` hint for the webapp's species→PID split; each importable block has a `label:` for the summary table; top-level `notifications:` block for email). Protocol keys are **ints**.
 - **Docs:** `docs/documentation.md` (get_library full reference), `docs/download_cdd_structures.md`, `docs/import_to_protocol.md`, `docs/get_protocol_data.md`. README links all.

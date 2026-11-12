@@ -47,7 +47,7 @@ ignore_columns:
 protocols:
 
   131399:
-    name: MDR1-MDCK II Inhibitor
+    name: MDR1-MDCK II (inh)
     alias: mdck                        # short name for get_protocol_data --experiments
     label: MDCK-MDR1 II (with and without inh)   # short display name for the per-compound summary
     # CDD project the data belongs to (the "Project" dropdown in the web UI).
@@ -55,6 +55,7 @@ protocols:
     # Saved mapping-template name (web UI "Templates" tab). Encodes the parser
     # type (Tabular) + field->readout map. Fill in once you've saved one.
     mapping_template: "MDCK-MDR1"
+    cell_line: "MDR1-MDCK II"             # Cell line value that routes a row here (vs MDCK II, 138368)
     # Batch key CDD matches on — the SRB-XXXXXXX-NNN value links the molecule,
     # so the batch id alone identifies each record.
     identifiers:
@@ -94,6 +95,47 @@ protocols:
       "Pgp substrate - Pgp inhibitor": 1883929
       "Provider Name - PgP inhibitor": 1883930
 
+  # Same 26 columns as MDR1 (131399); told apart by the Cell line VALUE.
+  138368:
+    name: MDCK II (inh)
+    alias: mdck_wt
+    label: MDCK II (with and without inh)
+    project: FBXO31
+    mapping_template: "MDCK_GT"   # built 2026-11-12 from the MDCK _upl.csv
+    cell_line: "MDCK II"
+    identifiers:                          # identical to 131399 so the two always tie on columns
+      batch_id: "Batch Molecule-Batch ID"
+    ignore:
+      - "Molecule Name"
+      - "Run Lab"
+    readouts:
+      "Study number": 2031871
+      "Date": 2031872
+      "Cell line": 2031882
+      "Mean Papp A to B": 2031873
+      "Mean Papp B to A": 2031874
+      "Efflux ratio": 2031875
+      "Mean %Solution Recovery A to B": 2031876
+      "Mean %Solution Recovery B to A": 2031877
+      "Provider Comment": 2031878
+      "Serac Comment": 2031879
+      "Permeability Class": 2031880
+      "Pgp substrate": 2031883
+      "Provider Name": 2031881
+      "Study number - PgP inhibitor": 2031884
+      "Date - PgP inhibitor": 2031885
+      "Cell line - PgP inhibitor": 2031886
+      "Mean Papp A to B - PgP Inhibitor": 2031887
+      "Mean Papp B to A - PgP inhibitor": 2031888
+      "Efflux ratio - PgP inhibitor": 2031889
+      "Mean %Solution Recovery A to B - PgP inhibitor": 2031890
+      "Mean %Solution Recovery B to A - PgP inhibitor": 2031891
+      "Provider Comment - PgP inhibitor": 2031892
+      "Serac Comment - PgP inhibitor": 2031893
+      "Permeability Class - PgP inhibitor": 2031894
+      "Pgp substrate - Pgp inhibitor": 2031895
+      "Provider Name - PgP inhibitor": 2031896
+
   # --- ADME assays ---
   # Identifier is `Molecule-Batch ID` — this is the raw WuXi column name AND what
   # the ADME CDD templates (LogD/PPB/Thermosl upload) map on. Do NOT rename it to
@@ -119,7 +161,7 @@ protocols:
       "Comment": 1073392
 
   86015:
-    name: Thermodynamic Solubility
+    name: ThermoSol (blank FaSSIF)
     alias: solubility
     label: therm sol 6.4
     project: FBXO31
@@ -139,7 +181,7 @@ protocols:
       "Comment": 1074003
 
   125963:
-    name: ppp UC (mouse)          # CDD renamed it 2026-09; "Ppp" is CDD's typo for ppb
+    name: Ppb UC (mouse)          # CDD renamed it 2026-09; "Ppp" is CDD's typo for ppb
     alias: ppb
     label: mouse ppb
     project: FBXO31
@@ -391,7 +433,7 @@ protocols:
     alias: rlm
     label: RLM
     project: FBXO31
-    mapping_template: "RLM_GT"   # TODO build in the CDD UI from the 1-row template CSV
+    mapping_template: "RLM_GT"    # built 2026-10-29 from the 1-row template CSV
     species: Rat
     identifiers:
       batch_id: "Molecule-Batch ID"
@@ -454,6 +496,253 @@ protocols:
       "Provider Comment": 2015351
       "Comment": 2015352
       "Provider Name": 2015353
+
+  # --- Hepatocyte stability (HMS files, split by species) ---
+  # A DIFFERENT assay from microsomal stability: Clint_hep / Clint_liver instead
+  # of the two `Remaining` readouts. Note the file spells the column `Species`
+  # (capital S) where the MMS files ship lowercase `species`; `_norm` is
+  # case-sensitive, so the two assays never match each other's blocks.
+  #   ..._HMS_..._Dog_upl.csv    -> 137788
+  #   ..._HMS_..._Monkey_upl.csv -> 137942
+  #   ..._HMS_..._Mouse_upl.csv  -> 138102
+  #   ..._HMS_..._Rat_upl.csv    -> 138103
+  #   ..._HMS_..._Human_upl.csv  -> 138104
+
+  137788:
+    name: Hepatocyte stability species dog
+    alias: dhms
+    label: DHMS
+    project: FBXO31
+    mapping_template: "DHMS_GT"    # built 2026-11-04 from the Dog _upl.csv
+    species: Dog
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2018953
+      "Date": 2018954
+      "Species": 2018955
+      "T½ (min)": 2018956
+      "Clint_hep (uL/min/10^6)": 2018957
+      "Clint_liver (mL/min/kg)": 2018958
+      "Provider Comment": 2018960
+      "Comment": 2018961
+      "Provider Name": 2018962
+
+  137942:
+    name: Hepatocyte stability species monkey
+    alias: chms
+    label: CHMS
+    project: FBXO31
+    mapping_template: "CHMS_GT"    # built 2026-11-04 from the Monkey _upl.csv
+    species: Monkey
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2022664
+      "Date": 2022665
+      "Species": 2022666
+      "T½ (min)": 2022667
+      "Clint_hep (uL/min/10^6)": 2022668
+      "Clint_liver (mL/min/kg)": 2022669
+      "Provider Comment": 2022670
+      "Comment": 2022671
+      "Provider Name": 2022672
+
+  138102:
+    name: Hepatocyte stability species mouse
+    alias: mhms
+    label: MHMS
+    project: FBXO31
+    mapping_template: "MHMS_GT"   # built 2026-11-06 from the Mouse _upl.csv
+    species: Mouse
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2025921
+      "Date": 2025922
+      "Species": 2025923
+      "T½ (min)": 2025924
+      "Clint_hep (uL/min/10^6)": 2025925
+      "Clint_liver (mL/min/kg)": 2025926
+      "Provider Comment": 2025927
+      "Comment": 2025928
+      "Provider Name": 2025929
+
+  138103:
+    name: Hepatocyte stability species rat
+    alias: rhms
+    label: RHMS
+    project: FBXO31
+    mapping_template: "RHMS_GT"   # built 2026-11-06 from the Rat _upl.csv
+    species: Rat
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2025930
+      "Date": 2025931
+      "Species": 2025932
+      "T½ (min)": 2025933
+      "Clint_hep (uL/min/10^6)": 2025934
+      "Clint_liver (mL/min/kg)": 2025935
+      "Provider Comment": 2025936
+      "Comment": 2025937
+      "Provider Name": 2025938
+
+  138104:
+    name: Hepatocyte stability species human
+    alias: hhms
+    label: HHMS
+    project: FBXO31
+    mapping_template: "HHMS_GT"   # built 2026-11-06 from the Human _upl.csv
+    species: Human
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2025939
+      "Date": 2025940
+      "Species": 2025941
+      "T½ (min)": 2025942
+      "Clint_hep (uL/min/10^6)": 2025943
+      "Clint_liver (mL/min/kg)": 2025944
+      "Provider Comment": 2025945
+      "Comment": 2025946
+      "Provider Name": 2025947
+
+  # --- Mouse PK cassette (DMPK), split by Route ---
+  # WuXi MPK reports ship NO Upload tab. The upload CSVs are BUILT from the
+  # 'PK Report' tab: one row per (analyte, route), one CSV per route below.
+  # Column names below ARE the upload format we hand back to WuXi.
+  #   ..._IV_bolus_upl.csv -> 137872
+  #   ..._PO_upl.csv       -> 138367
+
+  137872:
+    name: Mouse PK Cassette IV
+    alias: mpk_iv
+    label: MPK IV
+    project: FBXO31
+    mapping_template: "MPK_Cassette_GT"   # built 2026-11-10; binds 137872 (renamed IV 2026-11-12)
+    route: "IV bolus"                     # Route value that routes a row here
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2020820
+      "Date": 2020821
+      "Species": 2020822
+      "Strain": 2025725
+      "Gender": 2025726
+      "Route": 2020823
+      "Formulation": 2020834
+      "Concentration (mg/mL)": 2025763
+      "Dose (mg/kg)": 2025764
+      "Dosing Volume (mL)": 2025765
+      "C0 (ng/mL)": 2020826
+      "Cmax (ng/mL)": 2020829
+      "Clearance (mL/min/kg)": 2020827
+      "Vdss (L/kg)": 2020828
+      "Tmax (hr)": 2020830
+      "Tlast (hr)": 2025882
+      "T1/2 (hr)": 2020831
+      "MRTlast (hr)": 2025883
+      "AUC(last) (ng.h/mL)": 2020832
+      "AUCinf (ng.h/mL)": 2025884
+      "AUC (%)": 2025885
+      "Bioavailability (%)": 2020833
+      "Analyte": 2025886
+      "Comment": 2020836
+    # read by python/mpk_to_upload.py — labels match whitespace-insensitively
+    report: &mpk_report                   # shared with the PO block below
+      sheet: "PK Report"
+      block_title: "Pharmacokinetics of"     # one block per analyte
+      params_title: "PK Parameters"          # values come from the 'Mean' column right of it
+      header:                                # study-header label (col B) -> upload field
+        "Study No.": "Study number"
+        "In-life start date": "Date"
+      species_label: "Species"
+      # 'Male BALB/c Mouse, Fed' -> Gender / Strain / Species / Comment
+      species_pattern: '^(?P<Gender>Male|Female)\s+(?P<Strain>.+?)\s+(?P<Species>\S+)\s*(?:,\s*(?P<Comment>.+))?$'
+      group_labels:                          # one column per (group, compound)
+        compound: "Administered compound"
+        group: "Study Group"
+        dose: "Nominal dose (mg/kg)"
+        formulation: "Formulation"
+      analyte_labels:                        # one column per analyte
+        analyte: "Analyte compound"
+        batch: "Batch No."
+      parameters:                            # PK Parameters label -> upload field
+        "C0 (ng/mL)": "C0 (ng/mL)"
+        "Cl(mL/min/kg)": "Clearance (mL/min/kg)"
+        "Vdss (L/kg)": "Vdss (L/kg)"
+        "Cmax (ng/mL)": "Cmax (ng/mL)"
+        "Tmax (h)": "Tmax (hr)"
+        "T1/2 (h)": "T1/2 (hr)"
+        "Tlast (h)": "Tlast (hr)"
+        "AUC0-last (ng.h/mL)": "AUC(last) (ng.h/mL)"
+        "AUC0-inf (ng.h/mL)": "AUCinf (ng.h/mL)"
+        "MRT0-last (h)": "MRTlast (hr)"
+        "AUCExtra (%)": "AUC (%)"
+        "Bioavailability (%)a": "Bioavailability (%)"
+      dose_sheet: "Dose"
+      dose_tab:                              # repeated tables keyed on Group No. + Test Article
+        group: "Group No."
+        compound: "Test Article"
+        concentration: "Nominal Conc. (mg/mL)"
+      fields:                                # upload fields the converter fills itself
+        date: "Date"
+        route: "Route"
+        dose: "Dose (mg/kg)"
+        formulation: "Formulation"
+        concentration: "Concentration (mg/mL)"
+        analyte: "Analyte"
+
+  138367:
+    name: Mouse PK Cassette PO
+    alias: mpk_po
+    label: MPK PO
+    project: FBXO31
+    mapping_template: "MPK_Cassette_PO_GT"   # built 2026-11-12 from a _PO_upl.csv
+    route: "PO"
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2031815
+      "Date": 2031816
+      "Species": 2031817
+      "Strain": 2031829
+      "Gender": 2031830
+      "Route": 2031818
+      "Formulation": 2031827
+      "Concentration (mg/mL)": 2031831
+      "Dose (mg/kg)": 2031832
+      "Dosing Volume (mL)": 2031833
+      "C0 (ng/mL)": 2031819
+      "Cmax (ng/mL)": 2031822
+      "Clearance (mL/min/kg)": 2031820
+      "Vdss (L/kg)": 2031821
+      "Tmax (hr)": 2031823
+      "Tlast (hr)": 2031834
+      "T1/2 (hr)": 2031824
+      "MRTlast (hr)": 2031835
+      "AUC(last) (ng.h/mL)": 2031825
+      "AUCinf (ng.h/mL)": 2031836
+      "AUC (%)": 2031837
+      "Bioavailability (%)": 2031826
+      "Analyte": 2031838
+      "Comment": 2031828
+    report: *mpk_report
 
   # --- Caco-2 permeability (single protocol, no species split) ---
   # CAUTION: three config keys reproduce the CRO file's spelling, NOT CDD's:

@@ -92,12 +92,30 @@ def _objects(data):
     return data if isinstance(data, list) else []
 
 
+def _all_objects(session, url, page_size=100):
+    """Every object from a paged CDD list endpoint, not just the first page.
+
+    CAUTION: /protocols answers {'count': 72, 'page_size': 50, 'objects': [...]}
+    and silently truncates. A single GET hides protocols and reads as "not in the
+    vault". Walk the pages until `count` is reached.
+    """
+    out, offset = [], 0
+    while True:
+        r = session.get(url, params={"offset": offset, "page_size": page_size}, timeout=60)
+        if r.status_code != 200:
+            sys.exit(f"ERR list status={r.status_code} url={url} body_len={len(r.content)}")
+        data = r.json()
+        batch = _objects(data)
+        out += batch
+        total = data.get("count") if isinstance(data, dict) else None
+        if not batch or total is None or len(out) >= total:
+            return out
+        offset += len(batch)
+
+
 def list_protocols(session, vault):
     """Print id + name + readout count for every protocol in the vault."""
-    r = session.get(f"{API_BASE}/vaults/{vault}/protocols", timeout=60)
-    if r.status_code != 200:
-        sys.exit(f"ERR list-protocols status={r.status_code} body_len={len(r.content)}")
-    protos = _objects(r.json())
+    protos = _all_objects(session, f"{API_BASE}/vaults/{vault}/protocols")
     print(f"=== protocols in vault {vault}: {len(protos)} ===")
     for p in protos:
         rds = p.get("readout_definitions") or []
