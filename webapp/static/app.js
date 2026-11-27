@@ -52,6 +52,8 @@ function statusCell(u){
     tag.className = "tag amber"; tag.textContent = "already uploaded";
   } else if (u.status === "unknown-batches"){
     tag.className = "tag err"; tag.textContent = "unknown batch id";
+  } else if (u.status === "invalid-values"){
+    tag.className = "tag err"; tag.textContent = "invalid values";
   } else if (u.status === "error"){
     tag.className = "tag err"; tag.textContent = "error";
   } else {
@@ -66,6 +68,13 @@ function statusCell(u){
     const n = u.unknown_batches.length, ex = u.unknown_batches.slice(0, 3).join(", ");
     notes.push(n + " batch id(s) not in CDD — CDD would reject the whole file: " + ex +
                (n > 3 ? ", …" : "") + ". A molecule id needs its batch suffix (e.g. -001).");
+  }
+  if (u.invalid && u.invalid.length){
+    notes.push("CDD would reject the whole import — fix the file, then drop it again");
+    for (const p of u.invalid) notes.push(p.problem === "required-empty"
+      ? `${p.column}: required, empty in ${p.rows} row(s)`
+      : `${p.column}: text in a number column in ${p.rows} row(s) (${p.examples.join(", ")})`
+        + (p.required ? " — required, so an empty cell is rejected too" : " — leave the cell empty"));
   }
   if (u.unmapped && u.unmapped.length) notes.push("unmapped: " + u.unmapped.join(", "));
   if (u.missing && u.missing.length) notes.push("missing: " + u.missing.join(", "));
@@ -119,7 +128,10 @@ function updateGate(){
   submitEl.disabled = !canSubmit;
   if (UNITS.length === 0){ gateEl.textContent = ""; return; }
   if (!allResolved){
-    gateEl.textContent = `${UNITS.filter(u => !resolved(u)).length} of ${UNITS.length} row(s) need a protocol`;
+    const open = UNITS.filter(u => !resolved(u));
+    const fix = open.filter(u => u.status === "invalid-values" || u.status === "unknown-batches").length;
+    gateEl.textContent = `${open.length} of ${UNITS.length} row(s) need `
+      + (fix === open.length ? "a fix in the file" : fix ? "a fix in the file or a protocol" : "a protocol");
   } else if (readyN === 0){
     gateEl.textContent = `all ${dupN} row(s) already uploaded — nothing to submit`;
   } else {

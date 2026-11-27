@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 import check_cdd_commit as ccc
 import convert_upload as cu
 import detect_protocol as dp
+import get_protocol_data as gpd
 import import_to_protocol as itp
 import notify
 from get_library import API_BASE, make_session  # noqa: F401  (API_BASE via itp)
@@ -105,6 +106,7 @@ def _unit_view(fid):
         "unmapped": e.get("unmapped", []),   # column names — schema, safe
         "missing": e.get("missing", []),     # column names — schema, safe
         "unknown_batches": e.get("unknown_batches", []),   # batch ids absent from CDD
+        "invalid": e.get("invalid", []),   # column + row count (+ the offending text, e.g. NA)
         "status": e.get("status", "needs-selection"),
         "candidates": e.get("candidates", []),
     }
@@ -149,11 +151,28 @@ def _unregistered_batches(header, rows, block, cache):
         return []
 
 
+def _invalid_cells(header, rows, pid, block, cache):
+    """Cells CDD would reject: empty in a required readout, or text in a Number
+    readout. The readout flags are read live (once per pid per request), so a flag
+    changed in CDD applies at once. Returns [] if the check cannot run, so a
+    token/network problem never blocks an upload."""
+    if not rows or not TOKEN_FILE.exists():
+        return []
+    try:
+        if pid not in cache:
+            cache[pid] = gpd.readout_definitions(_session(), VAULT, pid)
+        return cu.invalid_cells(header, rows, block, cache[pid])
+    except Exception as ex:
+        print(f"WARN: value check skipped (pid {pid}): {ex}")
+        return []
+
+
 def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookups=None, batch_cache=None,
-                split=None):
+                split=None, defs=None):
     """Convert (if a pid is known) + evaluate + store a submission unit. Before
     flagging a unit `ready`, check CDD for an existing identical upload and flag
-    it `already-uploaded` instead (to avoid submitting the same data twice)."""
+    it `already-uploaded` instead (to avoid submitting the same data twice), then
+    flag it `invalid-values` if CDD would reject a cell (blank required, text in a number)."""
     e = STAGE.setdefault(fid, {})
     e.update(parent=parent, species=species, split=split, raw_header=header, raw_rows=rows,
              pid=pid, candidates=candidates or [])
@@ -175,13 +194,17 @@ def _stage_unit(fid, parent, species, header, rows, pid, candidates=None, lookup
     unknown = _unregistered_batches(h2, r2, block, batch_cache if batch_cache is not None else {})
     ready = res["ok"] and bool(block.get("mapping_template")) and len(r2) > 0 and not unknown
     status = "ready" if ready else ("unknown-batches" if unknown else "needs-selection")
+    invalid = []
     if ready and _already_uploaded(h2, r2, pid, lookups if lookups is not None else {}):
         status = "already-uploaded"
+    elif ready:
+        invalid = _invalid_cells(h2, r2, pid, block, defs if defs is not None else {})
+        status = "invalid-values" if invalid else "ready"
     e.update(csv_path=str(csv_path), header=h2, conv_rows=r2, name=block.get("name"),
              project=block.get("project"), mapping_template=block.get("mapping_template"),
              mapping_ok=res["ok"], unmapped=res["unmapped"], missing=res["missing"],
              kept=len(r2), dropped=dropped, renames=renames, corrections=corrections,
-             unknown_batches=unknown, status=status)
+             unknown_batches=unknown, invalid=invalid, status=status)
     return _unit_view(fid)
 
 
@@ -251,6 +274,7 @@ async def upload(files: list[UploadFile] = File(...)):
     units = []
     lookups = {}   # pid -> CDD data, fetched once per request for the dup check
     batch_cache = {}   # molecule-batch id -> registered? reused across units
+    defs = {}          # pid -> live readout flags (type, required), read once per request
     for uf in files:
         raw = STAGE_DIR / f"raw_{uuid.uuid4().hex}.xlsx"
         raw.write_bytes(await uf.read())
@@ -274,7 +298,8 @@ async def upload(files: list[UploadFile] = File(...)):
                 pid = det["species_pids"].get(species) or det["species_pids"].get(
                     species.title()) or det["species_pids"].get(species.capitalize())
                 units.append(_stage_unit(uuid.uuid4().hex, uf.filename, species,
-                                         header, srows, pid, cands, lookups=lookups, batch_cache=batch_cache))
+                                         header, srows, pid, cands, lookups=lookups, batch_cache=batch_cache,
+                                         defs=defs))
         elif det["status"].endswith("_group"):   # route, cell line: split on that column's value
             key = det["status"][: -len("_group")]
             col = key.replace("_", " ")
@@ -282,10 +307,11 @@ async def upload(files: list[UploadFile] = File(...)):
             for value, vrows in (cu.split_species(header, rows, col) or []):
                 units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None, header, vrows,
                                          pids.get(cu.split_key(value)), cands, lookups=lookups,
-                                         batch_cache=batch_cache, split=f"{col}: {value}"))
+                                         batch_cache=batch_cache, split=f"{col}: {value}", defs=defs))
         elif det["status"] == "single":
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
-                                     header, rows, det["pid"], cands, lookups=lookups, batch_cache=batch_cache))
+                                     header, rows, det["pid"], cands, lookups=lookups, batch_cache=batch_cache,
+                                     defs=defs))
         else:  # unknown / ambiguous — user must pick from the dropdown
             units.append(_stage_unit(uuid.uuid4().hex, uf.filename, None,
                                      header, rows, None, cands, lookups=lookups))

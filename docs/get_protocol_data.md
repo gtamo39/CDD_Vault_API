@@ -35,6 +35,8 @@ python3 python/get_protocol_data.py --list
 | `solubility` | Thermodynamic Solubility | 86015 |
 | `ppb` | Plasma protein binding (UC) | 125963 |
 | `caco2` | Caco-2 permeability | 85977 |
+| `epsa` | EPSA | 138427 |
+| `chromlogd` | CHROMLOGD | 138435 |
 
 Add or change an alias by editing the `alias:` field in that protocol's block
 in `config.yaml`.

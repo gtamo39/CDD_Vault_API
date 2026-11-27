@@ -172,9 +172,12 @@ Prefer a UI over the CLI? [webapp/](webapp/) is a local FastAPI app that wraps
 the same pipeline: drop WuXi `.xlsx` workbooks, it reads each **Upload** tab,
 auto-detects the protocol from the columns (change it via a dropdown), splits
 microsomal / hepatocyte / PPB files by **species**, mouse-PK files by **route**
-(IV → `Mouse PK Cassette IV`, PO → `Mouse PK Cassette PO`) and MDCK permeability files by **cell line**
+(IV → `Mouse PK Cassette IV`, PO → `Mouse PK Cassette PO`; a single-compound file, which has no `Analyte`
+column, → `Mouse PK Single IV` / `PO`) and MDCK permeability files by **cell line**
 (`MDR1-MDCK II` → `MDR1-MDCK II (inh)`, `MDCK II` → `MDCK II (inh)`). Protocols that share a column layout
 declare their split value in config (`species:` / `route:` / `cell_line:`), and must otherwise be identical.
+Two protocols with the same columns must never share a split value: a protocol duplicated in CDD needs a
+column change (as `Analyte` for MPK single) or a new value, or every file of that layout goes to one of them.
 Once every row is confirmed (the **Submit**
 button turns from grey to green) — submits the batch to CDD and tracks each run's
 progress. When every run commits, it **verifies the committed data against the
@@ -187,6 +190,13 @@ batch id isn't registered there, the row turns red — **unknown batch id** — 
 catches it before the upload. The usual cause is a CRO sending the *molecule* id
 (`SRB-0013325`) without its batch suffix (`SRB-0013325-001`). Fail-safe: if the
 token or network is unavailable the check is skipped rather than blocking.
+
+Each unit is also checked for **cells CDD would reject**: an empty cell in a
+readout that CDD marks *required* (e.g. `Provider Name`), or text such as `NA` in a
+number readout. The row turns red — **invalid values** — lists each column with its
+row count, and **Submit stays disabled**: with `autoreject` on, one such cell rejects
+the whole import. The readout flags are read live from CDD, so un-requiring a readout
+there takes effect on the next drop. Fail-safe like the batch check.
 
 Each unit is also checked against CDD for a
 **duplicate**: if every compound already exists there with matching values, the
@@ -257,9 +267,13 @@ It reports, per file:
 | Every identifier is a **full batch id** | `SRB-0013325` is a *molecule* id and is rejected — it needs the batch suffix, `SRB-0013325-001`. One bad id rejects the whole file |
 | Every endpoint column is present and spelled exactly right | The CDD mapping template matches on the literal column name |
 | Numeric result columns hold numbers only | CDD rejects a row with text (`NA`, `ND`) in a numeric field — the cell must be left empty |
+| Required columns are filled on every row | CDD rejects a row with an empty cell in a `required` readout (e.g. `Provider Name`). The lists mirror CDD's `required` flags: hepatocyte 7, microsomal 8, Mouse PK 6; the other assays have none. A required numeric column cannot take `NA` **or** an empty cell |
+| Mouse PK: `Formulation` holds the vehicle only; `Species` = `Mouse`, `Gender` = `Male`/`Female` | A leading `0.20 mg/mL in` belongs in `Concentration (mg/mL)`; the full species text (`Male BALB/c Mouse, Fed`) must be split. Cassette and single-compound tabs are two entries — the single tab has no `Analyte` column |
 | No unexpected extra columns; key fields filled on every row | Warnings — these do not block, but usually signal a wrong template |
 
-The page also lists the full expected column set per assay, so WuXi can self-serve the spec.
+With `autoreject` on, **one rejected row rejects the whole import** for that protocol, so each red
+item above costs the full file. The page also lists the full expected column set per assay, so WuXi
+can self-serve the spec; required columns carry a `*`.
 The conventions are copied from [config/config.yaml](config/config.yaml) — if you change a
 protocol's columns there, update the `PROTOCOLS` block in the HTML and re-send it.
 
@@ -268,7 +282,7 @@ protocol's columns there, update the `PROTOCOLS` block in the HTML and re-send i
 Pull each protocol's readout data back out of CDD, joined with molecule SMILES,
 into one wide table (one row per compound, latest run per compound). Assays are
 picked by the short `alias` set in [config/config.yaml](config/config.yaml)
-(`mdck`, `logd`, `hlm`, `mlm`, `rlm`, `solubility`, `ppb`, `caco2`). Full
+(`mdck`, `logd`, `hlm`, `mlm`, `rlm`, `solubility`, `ppb`, `caco2`, `epsa`, `chromlogd`). Full
 reference: **[docs/get_protocol_data.md](docs/get_protocol_data.md)**.
 
 **CLI** — writes a wide CSV:
@@ -303,7 +317,7 @@ walks through it step by step.
 | [python/split_species.py](python/split_species.py) | Split an `_upl.csv` into one CSV per species (e.g. MMS → `_Human_upl.csv` / `_Mouse_upl.csv`); Python port of the ADME HTML tool's species split |
 | [python/convert_upload.py](python/convert_upload.py) | Turn a raw WuXi `.xlsx` **Upload** tab into CDD-ready rows (qualifiers, ISO dates, blank-id drop, MDR1 identifier rename, species split) |
 | [python/detect_protocol.py](python/detect_protocol.py) | Guess a file's CDD protocol from its column signature (config-driven) |
-| [python/mpk_to_upload.py](python/mpk_to_upload.py) | Build a CDD upload CSV from a WuXi mouse-PK report that has **no Upload tab** — reads the `PK Report` + `Dose` tabs, one row per (analyte, route), **one CSV per route** — IV → 137872 `Mouse PK Cassette IV`, PO → 138367 `Mouse PK Cassette PO` (each block's `route:` field; both share one `report:` label map via a YAML anchor). `python python/mpk_to_upload.py <report.xlsx>...` writes `<report>_IV_bolus_upl.csv` + `<report>_PO_upl.csv` beside each; `--upload-tab DIR` also writes a **copy of each report with an `Upload` tab** (both routes) into DIR, ready to drag into the webapp — added at the zip level, so the report's charts and images are kept |
+| [python/mpk_to_upload.py](python/mpk_to_upload.py) | Build a CDD upload CSV from a WuXi mouse-PK report that has **no Upload tab** — reads the `PK Report` + `Dose` tabs, one row per (analyte, route), **one CSV per route** — IV → 137872 `Mouse PK Cassette IV`, PO → 138367 `Mouse PK Cassette PO` (each block's `route:` field; all MPK blocks share one `report:` label map via a YAML anchor). A **single-compound** report (one compound per dosing group) fills the `dosing: single` blocks instead — 138986 `Mouse PK Single IV` / 138987 `Mouse PK Single PO`, no `Analyte` column; `report_kind` decides, so one command handles both kinds (`--protocol` forces one block). `Formulation` holds the vehicle only: `formulation_pattern` cuts a leading `<conc> mg/mL in`, `Concentration` comes from the Dose tab, and a WARN names any row where the two disagree. `python python/mpk_to_upload.py <report.xlsx>...` writes `<report>_IV_bolus_upl.csv` + `<report>_PO_upl.csv` beside each; `--upload-tab DIR` also writes a **copy of each report with an `Upload` tab** (both routes) into DIR, ready to drag into the webapp — added at the zip level, so the report's charts and images are kept |
 | [webapp/](webapp/) | Local-only FastAPI drag-drop import app (`cdd/bin/python webapp/app.py`) — reuses the modules above |
 | [static/verify_file.html](static/verify_file.html) | **Send this to WuXi.** Standalone offline page: they drop a report and it checks the Upload tab against our convention before they send it |
 | [python/convert_dataset.py](python/convert_dataset.py) | `convert_to_target_format` — long→wide pivot for MDR1-style data |

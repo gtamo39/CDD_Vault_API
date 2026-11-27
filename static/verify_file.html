@@ -66,6 +66,7 @@
   .proto .id{font-family:var(--mono);font-size:12.5px;color:var(--azure);margin:0 0 8px}
   .cols{display:flex;flex-wrap:wrap;gap:6px;margin:0}
   .col{font-family:var(--mono);font-size:12px;background:#efe9dc;color:var(--ink);padding:3px 8px;border-radius:6px}
+  .col.req{background:var(--terracotta-soft);font-weight:600}
   .rules{margin:6px 0 0;padding-left:20px;font-size:14px;color:var(--muted)}
   .rules li{margin:4px 0}
   footer{margin-top:26px;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.04em}
@@ -101,10 +102,12 @@
         <li>The Upload tab must carry one identifier column with the compound batch id (<b>SRB-XXXXXXX-NNN</b>) — never split into separate <code>Compound ID</code> + <code>Batch No</code> columns.</li>
         <li><b>Include the batch suffix.</b> <code>SRB-0013325</code> is a <i>molecule</i> id and will be rejected; the value must be the full batch id, e.g. <code>SRB-0013325-001</code>. Every record in the file fails without it.</li>
         <li>Endpoint column names must match exactly (spelling, spacing, units, and the <code>- PgP inhibitor</code> suffixes are all significant).</li>
-        <li>Numeric result columns must contain <b>numbers only</b>. Never write <code>NA</code>, <code>ND</code>, or any other text — <b>leave the cell empty instead</b>. The import rejects a row that has text in a numeric field. A <code>&lt;</code> or <code>&gt;</code> qualifier (e.g. <code>&lt;0.5</code>) is fine.</li>
+        <li>Numeric result columns must contain <b>numbers only</b>. Never write <code>NA</code>, <code>ND</code>, or any other text — <b>leave the cell empty instead</b>, unless the column is required (marked <b>*</b> below): a required column needs a number. The import rejects a row that has text in a numeric field. A <code>&lt;</code> or <code>&gt;</code> qualifier (e.g. <code>&lt;0.5</code>) is fine.</li>
         <li><code>Run Lab</code>, <code>Compound ID</code> and <code>Molecule Name</code> are allowed but ignored. Any other unexpected column is flagged.</li>
+        <li><b>Fill every required column on every row.</b> The import rejects the whole row when a required cell is empty (for example <code>Provider Name</code> left blank for one species). The list below marks required columns with <b>*</b>.</li>
         <li>MDCK permeability: <code>Cell line</code> must be exactly <code>MDR1-MDCK II</code> or <code>MDCK II</code> — it decides where the row is filed.</li>
-        <li>Mouse PK: one row per compound and route. <code>Route</code> must be exactly <code>IV bolus</code> or <code>PO</code>. Leave a parameter cell empty when it does not apply to that route or was not determined (never <code>ND</code>).</li>
+        <li>Mouse PK, rows: one row per compound and dosing group. <code>Route</code> must be exactly <code>IV bolus</code> or <code>PO</code>. A cassette report adds an <code>Analyte</code> column (the measured compound); a single-compound report leaves that column out.</li>
+        <li>Mouse PK, values: split the species text (e.g. <code>Male BALB/c Mouse, Fed</code>) into <code>Gender</code> (<code>Male</code>), <code>Strain</code> (<code>BALB/c</code>) and <code>Species</code> (<code>Mouse</code>), and put the fed state in <code>Comment</code>. <code>Date</code> is the in-life start date (YYYY-MM-DD). <code>Dose (mg/kg)</code> and <code>Concentration (mg/mL)</code> are the nominal values. <code>Formulation</code> holds the vehicle only (e.g. <code>5%DMSO/5% solutol in water, clear solution</code>), never the concentration. The parameters are the Mean values; leave a cell empty when it does not apply to that route or was not determined (never <code>ND</code>).</li>
       </ul>
     </div>
     <div id="specList"></div>
@@ -123,6 +126,19 @@ const ID_UNPREFIXED = "Molecule-Batch ID";
 const ID_PREFIXED = "Batch Molecule-Batch ID";
 /* columns every report may carry that no endpoint imports — allowed, never flagged */
 const IGNORE_ALL = ["Run Lab", "Compound ID"];
+/* required: the vault rejects the whole row when one of these cells is empty */
+/* vehicle: the column that holds the formulation vehicle only, never its concentration */
+/* Mouse PK: the cassette and single-compound layouts differ only by the Analyte column */
+const MPK_READOUTS = ["Study number","Date","Species","Strain","Gender","Route","Formulation","Concentration (mg/mL)",
+  "Dose (mg/kg)","Dosing Volume (mL)","C0 (ng/mL)","Cmax (ng/mL)","Clearance (mL/min/kg)","Vdss (L/kg)","Tmax (hr)",
+  "Tlast (hr)","T1/2 (hr)","MRTlast (hr)","AUC(last) (ng.h/mL)","AUCinf (ng.h/mL)","AUC (%)","Bioavailability (%)",
+  "Analyte","Comment"];
+const MPK = { identifier:ID_UNPREFIXED, ignore:["Run Lab"], vehicle:"Formulation",
+  numeric:["Concentration (mg/mL)","Dose (mg/kg)","Dosing Volume (mL)","C0 (ng/mL)","Cmax (ng/mL)","Clearance (mL/min/kg)",
+    "Vdss (L/kg)","Tmax (hr)","Tlast (hr)","T1/2 (hr)","MRTlast (hr)","AUC(last) (ng.h/mL)","AUCinf (ng.h/mL)","AUC (%)",
+    "Bioavailability (%)"],
+  values:{"Route":["IV bolus","PO"],"Species":["Mouse"],"Gender":["Male","Female"]},
+  required:["Study number","Date","Species","Strain","Route","Formulation"] };
 
 const PROTOCOLS = [
   { key:"MDR1", name:"MDCK II / MDR1-MDCK II permeability (± PgP inhibitor)", identifier:ID_PREFIXED,
@@ -149,11 +165,10 @@ const PROTOCOLS = [
   { key:"HMS", name:"Hepatocyte stability (any species)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Date","Species","T½ (min)","Clint_hep (uL/min/10^6)",
       "Clint_liver (mL/min/kg)","Provider Comment","Comment","Provider Name"],
-    numeric:["T½ (min)","Clint_hep (uL/min/10^6)","Clint_liver (mL/min/kg)"] },
-  { key:"MPK", name:"Mouse PK (IV + PO)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
-    readouts:["Study number","Date","Species","Strain","Gender","Route","Formulation","Concentration (mg/mL)","Dose (mg/kg)","Dosing Volume (mL)","C0 (ng/mL)","Cmax (ng/mL)","Clearance (mL/min/kg)","Vdss (L/kg)","Tmax (hr)","Tlast (hr)","T1/2 (hr)","MRTlast (hr)","AUC(last) (ng.h/mL)","AUCinf (ng.h/mL)","AUC (%)","Bioavailability (%)","Analyte","Comment"],
-    numeric:["Concentration (mg/mL)","Dose (mg/kg)","Dosing Volume (mL)","C0 (ng/mL)","Cmax (ng/mL)","Clearance (mL/min/kg)","Vdss (L/kg)","Tmax (hr)","Tlast (hr)","T1/2 (hr)","MRTlast (hr)","AUC(last) (ng.h/mL)","AUCinf (ng.h/mL)","AUC (%)","Bioavailability (%)"],
-    values:{"Route":["IV bolus","PO"]} },
+    numeric:["T½ (min)","Clint_hep (uL/min/10^6)","Clint_liver (mL/min/kg)"],
+    required:["Study number","Date","Species","T½ (min)","Clint_hep (uL/min/10^6)","Clint_liver (mL/min/kg)","Provider Name"] },
+  { key:"MPK", name:"Mouse PK cassette (IV + PO)", ...MPK, readouts:MPK_READOUTS },
+  { key:"MPKS", name:"Mouse PK single compound (IV + PO)", ...MPK, readouts:MPK_READOUTS.filter(c=>c!=="Analyte") },
   { key:"LogD", name:"LogD 7.4", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Study Date","LogD7.4 (Oct/buff) result","Provider Comment","Provider Name","Comment"],
     numeric:["LogD7.4 (Oct/buff) result"] },
@@ -167,7 +182,9 @@ const PROTOCOLS = [
   { key:"MMS", name:"Microsomal stability (any species)", identifier:ID_UNPREFIXED, ignore:["Run Lab"],
     readouts:["Study number","Date","species","T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)",
       "Remaining (No co factor=60min)","Provider Comment","Comment","Provider Name"],
-    numeric:["T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)","Remaining (No co factor=60min)"] },
+    numeric:["T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)","Remaining (No co factor=60min)"],
+    required:["Study number","Date","species","T½ (min)","CLint (raw) (μL/min/mg)","Remaining (T=60min)",
+      "Remaining (No co factor=60min)","Provider Name"] },
 ];
 
 function unescapeOoxml(s){ return String(s).replace(/_x([0-9A-Fa-f]{4})_/g,(_,h)=>String.fromCharCode(parseInt(h,16))); }
@@ -268,6 +285,8 @@ const NUMERIC_RE=/^[<>≤≥]?\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
    single most common mistake and makes EVERY record in the file fail. */
 const BATCH_ID_RE=/^[A-Za-z]+-\d+-\d+$/;
 const MOLECULE_ONLY_RE=/^[A-Za-z]+-\d+$/;
+/* a formulation that starts with its concentration ("0.20 mg/mL in …"): that number belongs in the concentration column */
+const LEADING_CONC_RE=/^\d+(\.\d+)?\s*mg\/mL\s+in\s/i;
 function idxOf(header,name){ const n=norm(name); return header.findIndex(h=>norm(h)===n); }
 function blankCount(rows,i){ return i<0?-1:rows.filter(r=>(r[i]??"").trim()==="").length; }
 /* distinct non-numeric tokens in a numeric column (e.g. "NA", "ND") */
@@ -325,14 +344,15 @@ function analyze(fileName, sheetNames, upload){
   const extras=header.filter(h=>h && !allowed.has(norm(h)));
   push("No unexpected extra columns", extras.length?"warn":"pass",
     extras.length?"Not recognised (will be ignored or rejected): "+extras.join(", "):"");
-  const offenders=[];
+  const req=p.required||[], offenders=[];
   for(const col of (p.numeric||[])){
     const i=idxOf(header,col); if(i<0) continue;
     const toks=textTokens(rows,i);
-    if(toks.length) offenders.push(`${col} (${toks.map(t=>`“${t}”`).join(", ")})`);
+    if(toks.length) offenders.push(`${col} (${toks.map(t=>`“${t}”`).join(", ")})`
+      +(req.includes(col)?" — required: it needs a number, an empty cell is rejected too":""));
   }
   push("Numeric result columns hold numbers only", offenders.length?"fail":"pass",
-    offenders.length?"The import rejects these rows — leave the cell empty instead of writing text. Found in: "+offenders.join("; "):"");
+    offenders.length?"The import rejects every row with text in a numeric column. Leave the cell empty instead, unless the column is required. Found in: "+offenders.join("; "):"");
 
   for(const [col,allowed] of Object.entries(p.values||{})){
     const i=idxOf(header,col); if(i<0) continue;
@@ -344,7 +364,19 @@ function analyze(fileName, sheetNames, upload){
         +bad.map(v=>v?`“${v}”`:"(blank)").join(", "):"Rows: "+split);
   }
 
-  for(const col of ["Study number","Date","Study Date", p.identifier===ID_PREFIXED?ID_PREFIXED:ID_UNPREFIXED]){
+  const vi=p.vehicle?idxOf(header,p.vehicle):-1;
+  if(vi>=0){
+    const n=rows.filter(r=>LEADING_CONC_RE.test((r[vi]??"").trim())).length;
+    push(`“${p.vehicle}” holds the vehicle only`, n?"fail":"pass",
+      n?`${n} of ${rows.length} rows start with a concentration (e.g. “0.20 mg/mL in …”). Write the vehicle only; the concentration goes in “Concentration (mg/mL)”.`:"");
+  }
+
+  const empty=req.map(col=>[col,blankCount(rows,idxOf(header,col))]).filter(([,b])=>b>0);
+  if(req.length) push("Required columns filled on every row", empty.length?"fail":"pass",
+    empty.length?"The import rejects every row with an empty required cell. Empty: "
+      +empty.map(([c,b])=>`${c} (${b} of ${rows.length} rows)`).join("; "):"Checked: "+req.join(", "));
+
+  for(const col of ["Study number","Date","Study Date", p.identifier===ID_PREFIXED?ID_PREFIXED:ID_UNPREFIXED].filter(c=>!req.includes(c))){
     const i=idxOf(header,col); if(i<0) continue;
     const b=blankCount(rows,i);
     if(b>0) push(`“${col}” filled on every row`,"warn",`${b} of ${rows.length} rows are blank.`);
@@ -417,7 +449,8 @@ drop.addEventListener("drop",e=>handleFiles(e.dataTransfer.files));
 document.getElementById("specList").innerHTML=PROTOCOLS.map(p=>
   `<div class="proto"><h3>${esc(p.name)}</h3>
    <p class="id">identifier: ${esc(p.identifier)}</p>
-   <div class="cols">${p.readouts.map(c=>`<span class="col">${esc(c)}</span>`).join("")}</div></div>`).join("");
+   <div class="cols">${p.readouts.map(c=>(p.required||[]).includes(c)
+     ?`<span class="col req">${esc(c)} *</span>`:`<span class="col">${esc(c)}</span>`).join("")}</div></div>`).join("");
 
 if(typeof DecompressionStream==="undefined")
   foot.textContent="this browser is too old (needs DecompressionStream) — use a recent Chrome/Edge/Firefox/Safari";

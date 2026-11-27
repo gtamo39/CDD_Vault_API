@@ -5,7 +5,7 @@ joined with molecule SMILES, into one wide DataFrame / CSV.
 
 The read counterpart to import_to_protocol.py. Protocols are selected by the
 short `alias` set in config/config.yaml (mdck, logd, hlm, mlm, solubility, ppb,
-caco2, rlm). With no --experiments, every aliased protocol is pulled.
+caco2, rlm, epsa, chromlogd). With no --experiments, every aliased protocol is pulled.
 
 Output (per the agreed design):
   * ONE merged wide table — one row per compound (molecule), joined across all
@@ -104,6 +104,22 @@ def readout_names(session, vault, pid):
     p = get_with_retry(session, f"{API_BASE}/vaults/{vault}/protocols/{pid}").json()
     rds = p.get("readout_definitions") or []
     return {rd["id"]: rd["name"] for rd in rds if "id" in rd and "name" in rd}
+
+
+def readout_definitions(session, vault, pid):
+    """{readout_definition_id: {"name", "type", "required"}} for a protocol.
+
+    `type` is CDD's data type name ('Number', 'Text', 'PickList'). Read live, so a
+    `required` flag changed in the CDD web UI applies at once.
+    """
+    p = get_with_retry(session, f"{API_BASE}/vaults/{vault}/protocols/{pid}").json()
+    out = {}
+    for rd in p.get("readout_definitions") or []:
+        dt = rd.get("data_type")
+        if "id" in rd:
+            out[rd["id"]] = {"name": rd.get("name"), "required": bool(rd.get("required")),
+                             "type": dt.get("name") if isinstance(dt, dict) else dt}
+    return out
 
 
 def run_dates(session, vault, pid, page_size=1000):

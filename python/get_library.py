@@ -142,9 +142,10 @@ def resolve_collections(session, vault, names=None, ids=None):
 def _in_collection(obj, collection_id):
     """True if the listing object belongs to the given collection.
 
-    CDD's /vaults/{v}/collections/{cid}/molecules endpoint does NOT actually
-    filter by {cid} — it returns the full vault listing regardless. The real
-    membership signal is the molecule's own `collections` field:
+    CDD has no server-side collection filter: /vaults/{v}/collections/{cid}/molecules
+    ignored {cid} and now returns 404 (2026-11-16), and ?collections={cid} on
+    /vaults/{v}/molecules 404s too. So the code walks the plain /vaults/{v}/molecules
+    listing, and the membership signal is the molecule's own `collections` field:
     [{"id": <int>, "name": <str>}, ...]  or  None.
     """
     colls = obj.get("collections") or []
@@ -164,7 +165,7 @@ def paginate_molecules(session, vault, collection_id, page_size=1000,
         }
         r = get_with_retry(
             session,
-            f"{API_BASE}/vaults/{vault}/collections/{collection_id}/molecules",
+            f"{API_BASE}/vaults/{vault}/molecules",
             params=params,
         )
         data = r.json()
@@ -195,13 +196,13 @@ def discover(session, vault, resolved, page_size=1000):
         print(f"\n--- collection name={name} id={cid} ---")
         r = get_with_retry(
             session,
-            f"{API_BASE}/vaults/{vault}/collections/{cid}/molecules",
+            f"{API_BASE}/vaults/{vault}/molecules",
             params={"offset": 0, "page_size": page_size},
         )
         data = r.json()
         total = data.get("count") if isinstance(data, dict) else None
         objs = data.get("objects", []) if isinstance(data, dict) else []
-        # CDD's endpoint ignores {cid} — apply the client-side filter and
+        # The listing holds the whole vault — apply the client-side filter and
         # report both raw and filtered counts so listing/filter divergence
         # is visible at a glance.
         objs_in_cid = [o for o in objs if _in_collection(o, cid)]

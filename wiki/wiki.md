@@ -32,7 +32,7 @@ _Updated: 2026-10-29. Durable, aggregate memory of this repo — read at session
 ## CRO-facing format checker (static/verify_file.html, 2026-09-14)
 - **Purpose:** stop bad WuXi reports at the source. A **standalone single-file HTML** we email to WuXi; they drop a report on it and it validates the workbook against our upload convention BEFORE sending. Shifts the format fight left — we stop discovering breakage at import time.
 - **Standalone by design:** no server, no CDN, no Google Fonts, no external request of any kind. The xlsx is parsed **in the browser** with a hand-rolled minimal ZIP reader (central-directory walk + `DecompressionStream('deflate-raw')`) plus regex OOXML parsing (workbook.xml → rels → sharedStrings → sheet). This lets us promise WuXi "nothing leaves your machine", and it works offline. Needs a browser with `DecompressionStream` (Chrome/Edge/Firefox/Safari ≥ 2023); the page says so if absent.
-- **Checks (blockers → red):** (1) a sheet named `Upload` exists (case/space-insensitive); (2) the columns match a known assay (recall ≥ 0.6, mirrors `detect_protocol`); (3) the identifier column is present — one `Molecule-Batch ID` (MDR1: `Batch Molecule-Batch ID`); (4) every expected endpoint column is present; (5) **numeric result columns contain numbers only**. **Warnings (amber):** unexpected extra columns; `Study number`/`Date`/identifier blank on some rows. Header normalisation mirrors `convert_upload` exactly (`_unescape_ooxml` `_xHHHH_` decode + whitespace collapse + BOM strip), so WuXi's multi-line `CLint (raw)\r\n(μL/min/mg)` headers match.
+- **Checks (blockers → red):** (1) a sheet named `Upload` exists (case/space-insensitive); (2) the columns match a known assay (recall ≥ 0.6, mirrors `detect_protocol`); (3) the identifier column is present — one `Molecule-Batch ID` (MDR1: `Batch Molecule-Batch ID`); (4) every expected endpoint column is present; (5) **numeric result columns contain numbers only**; (6) **required columns filled on every row** (added 2026-11-16; per-entry `required:` lists mirror CDD's `required` flags, see that section); (7) **Mouse PK `Formulation` holds the vehicle only** — fails on a leading `<n> mg/mL in`, the converter's `formulation_pattern` (added 2026-11-26, per-entry `vehicle:` key), plus `values:` Species = `Mouse`, Gender = `Male`/`Female`. **Mouse PK is TWO entries since 2026-11-26** — cassette (24 columns, with `Analyte`) and single compound (23, without), built from one shared `MPK` object so they cannot drift; detection picks single on recall and cassette on precision, as the webapp does. Verified: 19/19 real copies pass under the right entry, 6 in-memory negatives fail on the right check, regression 9/9, 0 "CDD" / 0 network primitives. The rule list now spells out the MPK convention for WuXi (rows per dosing group, species split, in-life date ISO, nominal dose + conc, Mean values, ND -> empty). **Warnings (amber):** unexpected extra columns; `Study number`/`Date`/identifier blank on some rows (only where the column is not in `required:`). Header normalisation mirrors `convert_upload` exactly (`_unescape_ooxml` `_xHHHH_` decode + whitespace collapse + BOM strip), so WuXi's multi-line `CLint (raw)\r\n(μL/min/mg)` headers match.
 - **The conventions are duplicated from config, on purpose** — the page must run with no repo access. `PROTOCOLS` in the HTML carries 5 entries (MDR1, LogD, TSY, PPB, and microsomal **collapsed to one** entry since HLM/MLM share an identical column set and the file carries both in its `species` column). **If a protocol's columns change in `config/config.yaml`, update the HTML's `PROTOCOLS` block and re-send the file.** No readout ids are embedded (internal, and not needed).
 - **Validated 2026-09-14 against the 9 real failures in `data/uploads/20260914/` + 9 synthetic workbooks** (TEST-xxxx ids only). The real files split into exactly 3 failure modes: **5 files have no `Upload` tab at all** (WuXi shipped only Signature/Summary/Materials/Initial Report/BA Data — the TSY and HMS ones too); **3 MMS files use the OLD identifier** `Compound ID` + `Batch No` instead of `Molecule-Batch ID` (their endpoint columns score recall 1.0, so the checker names the assay and tells them to merge the two columns); **1 MDR1 file is structurally perfect but carries a literal `NA`** in `Efflux ratio - PgP inhibitor`. Synthetic cases cover the pass path for all 5 assays, a misspelled column, a lowercase `upload` sheet, blank key fields, and `<`/`>` qualifiers.
 - **`NA` in a numeric field is a real CDD reject (2026-09-14):** CDD's rejected-row export (`data/uploads/CDD - Ignore text value in numeric fields - *.csv`, `Event Description` column) says `REJECTED: Value 'NA' not a valid number: treating it as blank.` **Convention: leave the cell EMPTY, never write `NA`/`ND`.** A `<`/`>` qualifier (`<0.5`) is legitimate and is NOT flagged. This is why the MDR1 file passed every structural check yet still failed the import.
@@ -1285,7 +1285,8 @@ the composite r9 string.
 **Required flags — FIXED by the operator 2026-11-09, one still open.** 14 of 24 readouts were `required`,
 including IV-only C0 / Clearance / Vdss and PO-only Cmax / Tmax / Bioavailability, so every row of a
 one-row-per-route upload left 3 required readouts blank; T1/2 can be `ND`. CDD's docs do not say whether a
-blank required readout is rejected (text in a numeric readout IS), and slurps run `autoreject=true`. The
+blank required readout is rejected (text in a numeric readout IS) — **SETTLED 2026-11-16: it IS rejected**,
+see the HMS `Provider Name` section — and slurps run `autoreject=true`. The
 operator un-required those 7 (verified via the API). **Still required (7):** Study number, Date, Species,
 Strain, Route, Formulation, **AUC(last)** — and AUC(last) is `ND` in 3 generated rows, see below.
 
@@ -1330,7 +1331,8 @@ the validation could not: 4 analytes x {IV bolus, PO} per file, (batch, route) u
 molecule part equals its `Analyte` (r19 <-> r20 aligned), detection `single:137872`, `mapping_ok=True`,
 **0 batch ids missing in CDD**, 0 text tokens in numeric columns, UTF-8-BOM, and the `mg/mL` in every
 formulation string **equals the Dose-tab concentration in 48/48 rows** (cross-checks the concentration
-source). `Tlast` is blank on every IV row — WuXi reports the IV Tlast Mean as `ND`.
+source; **79/80 over the 10 reports on 2026-11-25** — see the Formulation section). `Tlast` is blank on
+every IV row — WuXi reports the IV Tlast Mean as `ND`.
 
 **RESOLVED 2026-11-10 — the operator un-required AUC(last) too** (verified via the API). It was blank in
 3 rows (2026092103: 1, 2026092801: 2). They are PO arms where
@@ -1628,6 +1630,256 @@ edit: extract the `<script>` body and `node --check` it.
 **101 tests pass** (4 new: NFKC split key, synthetic cell-line group, real config ties for BOTH identifier
 spellings, and the split-group invariant).
 
+## Library export: the collection-molecules endpoint now 404s — switched to the plain listing (2026-11-16)
+
+`get_df` and the CLI stopped with `ERR: status=404` on `GET /vaults/7108/collections/<cid>/molecules`.
+MS_ML found it, because its library pull calls `get_df`. That endpoint always ignored `{cid}` (see
+Findings below), so the fix keeps the behaviour: `paginate_molecules` and `discover` now call the plain
+`GET /vaults/{v}/molecules` listing with the same `offset` / `page_size` paging, and `_in_collection`
+still keeps the members of each collection. `download_cdd_structures.py` already used this listing.
+
+Checked on vault 7108 (counts only):
+- The plain listing answers 200 with `count` 19,970 molecules. Each molecule has `collections` and
+  `batches[].batch_fields`.
+- A full `get_df` pull of AK + AJ with the 14 MS_ML `CHEMLIB_COLUMNS` took 305 s: AJ 14,210 + AK 25
+  rows, and every field resolves.
+- The batch id is the batch top-level key `molecule_batch_identifier` (on every batch, starts with the
+  molecule name). The batch list of a molecule is oldest first: in 138 of 138 multi-batch AK / AJ
+  compounds, the list order equals the identifier order.
+
+_[python/get_library.py paginate_molecules / discover / _in_collection; docs/documentation.md "Known CDD API quirks"]_
+
+## HMS import: blank `Provider Name` + one `NA` row — checker AND webapp now block both (2026-11-16)
+
+**File:** `data/uploads/20261116_HMS_errors/2026_11_13_HMS_..._v2_report_1.xlsx` (Upload tab, 30 rows:
+Mouse / Monkey / Human x10). CDD's rejected-row export (`CDD - Invalid Readout - *.csv`, 10 rows) gives one
+message for all 10: `Readout "" rejected. Readout definition "Provider Name" requires text data.`
+
+**Findings (counts from CDD, 2026-11-16 runs):**
+- **Human 138104: 0 of 10 rows.** `Provider Name` is empty on all 10 Human rows (filled on Mouse and Monkey).
+  The operator's corrected re-upload the same day landed **10 of 10** (a second run).
+- **Monkey 137942: 0 of 10 rows, although `Provider Name` is filled.** One Monkey row has `NA` in
+  `T½`, `Clint_hep` and `Clint_liver`. With `autoreject=true` that one row rejects the whole slurp.
+  It is the only defect in the Monkey rows. The same-day re-upload failed again (a second empty run).
+- **Mouse 138102: 10 of 10 rows landed.** Today's attempts left 3 empty runs (1 Human, 2 Monkey).
+- **CONFIRMED: CDD rejects an empty cell in a `required` readout** (Text or Number). Empty cells in the
+  non-required `Provider Comment` / `Comment` passed. This settles the open question in the MPK section.
+- Second CDD export (`CDD - Invalid Readout - f7297…csv`, 1 row) = the Monkey `NA` row:
+  `Readout "NA" rejected. Readout definition "T½ (min)" is invalid (NA).` (same for Clint_hep, Clint_liver).
+- The duplicate guard is row-based: empty runs never make a unit `already-uploaded`.
+
+**Webapp now blocks both errors before Submit (2026-11-16).** At staging, a unit that would be `ready`
+gets `invalid-values` (red tag, Submit disabled) when `convert_upload.invalid_cells` finds an empty
+`required` cell or text in a `Number` readout. The flags come live from CDD
+(`get_protocol_data.readout_definitions`, read once per pid per request), so a flag changed in CDD
+applies at once — no copy in config. It runs on the rows AFTER `corrections:` (so a PPB `fill_na` still
+works), only for units that are not `already-uploaded`, and it is skipped (never blocks) without a token
+or network. **Verified:** the HMS file → Monkey `invalid-values` (T½ / Clint_hep / Clint_liver `NA` x1,
+required); the Human rows of the original file show `Provider Name` empty x10 (that unit reads
+`already-uploaded` because the corrected rows are in CDD). Over every workbook in `data/uploads` (96 units),
+the only flags are true CDD rejects: those two, plus the 2 Sept. MDR1 files with `NA` in
+`Efflux ratio - PgP inhibitor` (rejected then, corrected copies uploaded later). 108 tests pass (7 new).
+
+**Checker wording:** the numbers-only check no longer advises an empty cell for a required column; it says
+the column needs a number (an empty cell is rejected too).
+
+**Required flags in CDD (live API, 2026-11-16) — identical inside each checker entry:**
+- Hepatocyte, all 5 species (7/9): Study number, Date, Species, T½ (min), Clint_hep, Clint_liver, Provider Name.
+- Microsomal, all 5 species (8/10): Study number, Date, species, T½ (min), CLint (raw), Remaining (T=60min),
+  Remaining (No co factor=60min), Provider Name.
+- Mouse PK IV + PO (6/24): Study number, Date, Species, Strain, Route, Formulation.
+- None: MDR1-MDCK II, MDCK II, Caco-2, LogD, TSY, all 6 PPB.
+- No required readout is unmapped in config; every config readout id exists in CDD.
+
+**Checker change:** `PROTOCOLS` entries HMS / MMS / MPK gained `required:`. A new check
+`Required columns filled on every row` FAILS with `<column> (N of M rows)`; on a pass it lists the columns
+it checked. The old amber blank warning skips required columns (no double report). The spec list marks
+required columns with `*`, and a rule bullet explains it. **When a `required` flag changes in CDD, update
+the entry's `required:` list and re-send the page.**
+
+**Verified:** the HMS file FAILS with `Provider Name (10 of 30 rows)` = the CDD export; the same file with
+the blanks filled in memory PASSES that check. Over all real workbooks in `data/uploads`: 3 other HMS,
+13 MMS and 8 corrected MPK files PASS (no false alarm). 67/67 synthetic cases (each required column
+blank or spaces-only -> fail, each optional column blank -> pass). Whole-page `node --check` OK,
+regression ALL 9.
+
+**OPEN — operator decision: required numeric results vs. a value WuXi cannot measure.** For a column
+that is both numeric and required (HMS T½ / Clint_hep / Clint_liver; MMS T½ / CLint / both Remaining),
+`NA` is rejected AND an empty cell is rejected — such a row cannot be imported. Options: un-require
+those readouts in CDD (the MPK precedent, 2026-11-09/10) and have WuXi explain the gap in
+`Provider Comment`; or keep them required and have WuXi leave the row out. Then align the checker.
+
+_[static/verify_file.html PROTOCOLS required: + analyze(); README "Give WuXi a format checker"]_
+
+## MPK `Formulation` = the vehicle only; all corrected copies rebuilt (2026-11-25)
+
+**Decision (operator, 2026-11-25):** the MPK `Formulation` readout holds the vehicle only, e.g.
+`5%DMSO/5% solutol in water, clear solution` — not `0.20 mg/mL in 5%DMSO/...`. The concentration lives in
+`Concentration (mg/mL)` only. **Mechanism:** `report.formulation_pattern` (shared IV/PO map) cuts an optional
+leading `<conc> mg/mL in`; a text without that prefix passes through whole. `Concentration` KEEPS its
+Dose-tab source (`Nominal Conc.`); when the text names another value, `report_rows` returns the row
+position in a 4th value `conflicts` and the CLI prints a WARN — it never switches source silently.
+
+**Data (10 reports in `data/uploads/20261109_MPK4`, 80 rows):** every formulation had the prefix, and after
+the cut all 80 carry ONE vehicle. Dose tab filled in 80/80. Text conc == Dose-tab conc in **79/80**. The
+exception: report **2026110901** (new today), IV group — the text gives one conc for all 4 compounds, the
+Dose tab gives the same for 3 but another for the compound in Upload-tab row 6, in all 4 of its animal rows
+(Dose rows 30-33), with the same nominal dose. **RESOLVED (2026-11-25): the Dose-tab `Nominal Conc.`
+(J30:J33) is the wrong value.** For that compound, WuXi's measured `Mean Conc.` is within 20% of the text value
+in 4/4 samples and of the Dose-tab nominal in 0/4, and WuXi's own `Accuracy (%)` is outside 80-120% in 4/4;
+the other 3 IV compounds pass every one of these checks. So the rebuilt copy carries a WRONG
+`Concentration (mg/mL)` in that one cell (Upload tab row 6, col I = IV CSV line 4, col I). PK parameters are
+not affected (WuXi computes them with the nominal dose in mg/kg, equal for all 4). Fix before upload: WuXi
+corrects the Dose tab and reissues, or the operator sets that cell to the text value. The Dose tabs of all
+10 reports agree within each (group, compound).
+
+**Rebuilt (operator request):** all 10 copies in `corrected_xlxs/` (8 replaced + 2 new: 2026102703,
+2026110901) and all 20 route CSVs. Verified: vs the old copies only the Upload-sheet part changed, header and
+row count equal, every non-Formulation cell identical, old value == `<conc> mg/mL in ` + new value;
+LibreOffice reads the Upload tab == the webapp reader (10/10); the verify page passes 10/10; 111 tests pass.
+
+**CDD before the re-upload:** 137872 and 138367 each held 8 runs x 4 rows (the 8 Nov-12 reports, nothing
+else, no empty runs), all with the old formulation text. `Formulation` is Text + required. **The webapp's
+duplicate guard does NOT compare text readouts**, so re-dropping the rebuilt copies shows the 8 old reports
+`already-uploaded` (16 units) and the 2 new ones `ready` (4) — the old runs must be deleted FIRST, or the
+fix never reaches CDD (but no duplicate can form either). CDD API: `DELETE /api/v1/vaults/{v}/runs/{id}`
+deletes one run (CDD support article "Run(s) GET DELETE"); `DELETE .../runs?slurp=<slurp_id>` deletes every
+run of one import, all-or-nothing on permissions. Web UI: Explore Data -> Protocols -> protocol -> run date ->
+"Delete this run" at the bottom of the side panel. The webapp submits one slurp per unit, so the slurp form
+saves nothing here: 16 runs = 16 deletes.
+
+**Done 2026-11-25:** the operator deleted all 16 runs (API: 0 runs / 0 rows in both protocols). A dry staging
+of the 9 copies without 2026110901 gives 18 units, all `ready` (none `invalid-values`). 2026110901 is HELD
+until WuXi corrects its Dose tab (request drafted: Dose J30:J33 / K30:K33 vs PK Report C14:F14, row 12).
+
+**Re-upload VERIFIED 2026-11-25:** both protocols hold 9 runs x 4 rows = 36 rows; vs the 9 copies, 36/36 rows
+match and 792/792 cells per protocol are equal, text readouts included; 0 `Formulation` cells hold "mg/mL".
+The page stopped at `committed 4/4` (no azure SUCCESS), yet a direct POST to the running webapp's
+`/api/verify` afterwards gave success 18/18 units (72/72 matched). The page runs that check ONCE, only after
+it sees every slurp terminal, and does not retry if the call fails ("verify failed to run" in the footer) —
+cause of this miss not confirmed.
+
+_[config `report.formulation_pattern`; python/mpk_to_upload.py report_rows / main; MpkToUploadTests (3 new)]_
+
+## Mouse PK SINGLE compound — 138986 IV / 138987 PO configured, templates done (2026-11-26)
+
+**Reports:** 9 WuXi single-compound MPK reports in `data/uploads/20261125_MPKS` (file names carry the
+compound id — redact them in any output). **Same layout as the cassette reports:** identical PK Report
+header labels, identical PK parameter labels (all 12 mapped present, no new ones), species text and
+`<conc> mg/mL in <vehicle>` formulation both match the shared `report:` map, Dose tab has the mapped labels.
+Differences: 1 compound per dosing group, analyte == dosed compound (9/9), other vehicles in 3 reports.
+22 rows (9 IV + 13 PO): **2 reports (2026102904, 2026102905) carry 3 PO groups** that differ in dose and
+concentration (same vehicle) -> 3 PO rows per compound. 0 formulation-vs-Dose conflicts; ND blanked as usual.
+
+**Protocols (operator, 2026-11-26):** copies of the cassette pair, renamed, **`Analyte` deleted**, project
+FBXO31, Route pick lists `IV bolus` / `PO`, same 6 required flags. Config ids generated from the API by
+readout NAME (23/23 per protocol), audited.
+
+**Why `Analyte` had to go (tested with the real `detect`):** exact copies share the column set AND the
+route values, so `route_pids` collides and a CASSETTE file was routed to the SINGLE pair, silently. Without
+`Analyte`, a 24-column cassette header -> 137872/138367 and a 23-readout single header -> 138986/138987.
+New config-wide test `test_split_values_are_unique_within_a_column_set` fails on that mistake (mutation-checked).
+
+**Converter:** blocks carry `dosing: cassette | single`; `mpk_to_upload.report_kind` (>1 compound in a
+dosing group = cassette) picks them, so one command serves both kinds. Before this, 4 report blocks would
+have collided: both IV blocks write `_IV_bolus_upl.csv`, and the Upload tab took `blocks[0]`'s layout.
+Built: 18 route CSVs (24 columns) + 9 copies with an Upload tab in `20261125_MPKS/corrected_xlxs/`. The
+cassette path is unchanged (dry run: 10 cassette, 80 rows, 25 columns, only the known 2026110901 WARN).
+Webapp dry staging: single copies -> 138986 (9 rows) / 138987 (13 rows) `needs-selection` until the
+templates exist; the cassette copy -> 137872 / 138367 `already-uploaded`. 114 tests pass (3 new).
+
+**Templates DONE (2026-11-26):** `MPK_Single_IV_GT` (62934) binds only 138986, `MPK_Single_PO_GT` (62935)
+only 138987; 23/23 readout ids == config each, `Molecule-Batch ID` -> batch identifier. First imports:
+2026102901 IV and 2026102902 PO, 1 row each, 23/23 cells equal to the files. Dry staging of all 9 copies
+with the new config: 16 `ready` + 2 `already-uploaded` (exactly those two), every unit on 138986/138987,
+none `invalid-values`. Remaining push: 8 IV + 12 PO rows -> expected totals 9 IV / 13 PO.
+
+_[config 138986 / 138987 + `dosing:`; python/mpk_to_upload.py report_kind / main; RouteSplitTests,
+CellLineSplitTests, MpkToUploadTests]_
+
+**Legacy batch `20261126_MPKS` (2026-11-26):** 4 older single-compound reports (Jul–Sep 2026). 1 is standard
+(433706-2026081401) -> the converter as usual. 3 need a **one-off script** (operator chose it over a converter
+change; the converter is unchanged; the script `mpks_legacy_build.py` stays in the session scratchpad, not in
+the repo). It calls the converter functions on a scratch copy. What is different:
+- **Elacridar arm (3 reports):** group 3 pre-doses Elacridar 100 mg/kg PO (P-gp/BCRP inhibitor) before the test
+  compound (header `PO3 (-2h)`, or `Phase` 1 -> 2). Elacridar has no PK block, but it puts 2 compounds in one
+  group, so `report_kind` says *cassette* (wrong). **Decision (operator):** a normal Mouse PK Single PO row with
+  Comment `Fed; Elacridar 100 mg/kg PO pre-dose (-2h)`; the timing shows only where the header gives it.
+- **Group-name suffixes (433706-2026071701):** header `IV bolus1 (0h)` / `PO3 (-2h)`, PK tables `PO3 (male)` /
+  `IV bolus4 (female)` -> `pk_tables` StopIteration. Male and female groups: Gender per group from the table
+  label. Species text `Male and Female BABL/c Mouse, Fed` -> Strain written `BALB/c` (WuXi typo).
+- **Combined Dose-tab keys:** groups that share one solution carry one key (`02&03`, `01&04`, `02&03&05`), so
+  `dose_concentrations` misses group `2` -> Concentration blank + formulation WARN. Split on `&` -> 0 conflicts.
+- **Old WuXi `Upload` tab (426354-2026062401, old 23-column format):** renamed `Upload (WuXi)` in the copy (no
+  formula or defined name points to it). Cross-check: our 3 rows == WuXi's tab, 30/30 values, vehicles equal.
+- Strain `B-Mdr1 KO` (P-gp KO mice, 433706-2026080701): Strain is a Text readout, so CDD accepts it.
+
+Result: 4 copies in `20261126_MPKS/corrected_xlxs/` + 8 route CSVs, 13 rows (5 IV / 8 PO). Verify page 4/4
+pass (single entry); dry staging 8/8 units `ready` on 138986/138987; rows vs the plain converter differ only in
+Concentration (now filled) and the Elacridar Comment. CDD has only the 4 Mouse PK protocols (no older home).
+**If more legacy reports come:** `report_kind` by PK-block count (>1 `Pharmacokinetics of` block = cassette)
+gives the old answer on all 20 earlier reports and the right one on these 4 — the base for a converter change.
+
+## EPSA 138427 + CHROMLOGD 138435 — configured from CDD (2026-11-26)
+
+**CDD (operator-built 2026-11-13, project FBXO31):** EPSA readouts `Retention Time` (min), `EPSA Result` (Å²),
+`Date` (Text); CHROMLOGD readouts `Date` (Text), `Chromatographic LogDpH 7.4`, `R2`, `S`. **Every readout is
+required.** Templates `EPSA_GT` (62582) and `CHROMLOGD_GT` (62589) map the file column **`Batch`** (it holds the
+full SRB-XXXXXXX-NNN batch id) to Molecule-Batch ID; EPSA's `Compound ID` is not mapped (ignored globally).
+**Upload-tab convention (operator):** EPSA from `Summary Report`, ChromLogD from `Results `; reference compounds
+(Batch `NA`) left out; raw full-precision values; `Date` = Study Completion Date (Signature tab) as YYYYMMDD int;
+column order `Batch, Date, Chromatographic LogDpH 7.4, R2, S`. Config keys follow the file (`EPSA Result (Å2)`,
+Å = U+00C5). `read_upload_sheet` strips `Batch ` to `Batch`, so the CSV header equals the template header.
+First manual uploads: ChromLogD Nov-12 377/377 rows equal in CDD; EPSA 397/399 — the 2 others carry `N/A`/`NA` in
+both required numbers, so CDD rejected them (correct: no value).
+
+**ChromLogD report family (study 433706-20261028, `20261126_ePSA_ChromLogD`):**
+_Story from WuXi's emails (`20261126_ePSA_ChromLogD/email_trace.txt`), confirmed by the batch sets on 2026-11-27._
+399 compounds requested (= the EPSA set). 20 had MS problems (no/low signal, poor peaks) -> repeat.
+- Nov-11 "379 cpds": no S. Nov-12 = the same 377 compounds with identical ChromLogD/R2, + S; the 2 removed compounds
+  exceeded the Chrom range (−1 to 7). Serac asked WuXi to re-measure all 22 (20 MS + 2 range). Superseded -> skip.
+- A Nov-12 re-send named `updated-433706-20261028-…Nov-12-2026` (uploaded 11-20): identical (all values incl. S).
+  WuXi uploaded it by mistake and asked us to ignore it (email 11-25) -> skip.
+- **Nov-20 "v2":** same 377, re-processed (other gradient points): ChromLogD median |Δ| 0.82 log units, 106 > 1.0;
+  R2 higher for 348/377 (median 0.997 vs 0.951). **Decision (operator): replace** — delete the Nov-12 run, upload v2.
+  WuXi's reason (email 11-20): new data-inclusion standard for the Snyder LSS fit (logk' = logkw' − Sφ): keep the
+  low-organic points first, at least 3 points, R2 > 0.95. The old fits kept high-organic points near the dead time,
+  which lowered S and under-estimated hydrophobic compounds. WuXi calls v2 "the correct, latest report" (email 11-25).
+- **Nov-24 "20 cpds":** the 2 removed compounds + 18 new; older isocratic layout (3 MeOH-ratio points per compound,
+  `Summary Report` holds `Batch No.` + `ChromLog D7.4 Result`). WuXi's ChromLogD = intercept and R2 = r² of a
+  straight-line fit of LogK' vs MeOH ratio (20/20), so S = −slope (median 4.6, same scale as v2's 3.96) but not
+  reported. **Decision (operator): upload without S** — S set to not required in CDD first.
+- Nov-25: a shake-flask LogD 7.4 report (2 compounds) with WuXi's own `upload` tab (LogD 85979 format).
+  These are the last 2 MS-problem compounds: MS failed again and UV gave double peaks, so WuXi used shake flask.
+  **Decision (operator, 2026-11-27): load it into CHROMLOGD, not LogD** (it belongs to the ChromLogD request). The
+  copy carries the shake-flask value in `Chromatographic LogDpH 7.4`, Date 20261125 (completion), R2 and S empty;
+  WuXi's tab is renamed `Upload (WuXi LogD)` (readers take the FIRST sheet named 'upload', any case). Caveat: the
+  2 rows hold an octanol/buffer LogD on another scale than ChromLogD, and CHROMLOGD has no column to mark the method.
+
+**Decision (operator, 2026-11-27, from the email trace): upload 3 files, skip the other 4 reports.** v2 (377) +
+20 cpds (20: the 2 out-of-range + 18 MS) + shake-flask (2) = 399 compounds, no overlap, equal to the EPSA set.
+Skip Nov-11, Nov-12 (its run is in CDD: delete it), the 11-20 `updated-…Nov-12` re-send, and EPSA (397/399 already in
+CDD; the 2 others have no value). `corrected_xlxs/` holds exactly the 3 copies to upload, all CHROMLOGD. Steps
+(the CDD changes BEFORE the webapp; the 3 files can go in one batch):
+1. CDD: delete the only CHROMLOGD run (it came from `2026_11_13_…Nov-12-2026.xlsx`). Keep the EPSA run.
+2. CDD: set the CHROMLOGD readouts `S` AND `R2` to not required (S was done by 2026-11-27, seen in the live check).
+   Must come before staging: the webapp computes the status at staging, and ONE `invalid-values` unit disables
+   Submit for the whole batch (`app.js` gate: all units resolved).
+3. Webapp, one batch from `corrected_xlxs/` (staging ~5 min, v2 is large):
+   - `2026_11_25_ChromLogDY_updated-433706-20261028-ChromLogDY_Report_Nov-20-2026-v2.xlsx` -> 377 rows
+   - `2026_11_25_ChromLogDY_433706-20261028-ChromLogDY_Report_Nov-24-2026 20 cpds.xlsx` -> 20 rows, S empty
+   - `2026_11_26_ChromLogDY_433706-20261028-ChromLogDY_Report_Nov-25-2026.xlsx` -> 2 rows, R2 + S empty (shake flask)
+Open: cell-by-cell check of CDD against the 3 files after the upload.
+
+Built (`chrom_build.py`, session scratchpad): `corrected_xlxs/` v2 (377 rows, Date 20261120, == Results raw 377/377)
+and 20 cpds (20 rows, Date 20261124, S empty; live check `S required-empty` until S is un-required). Both detect
+138435 alone; original parts byte-identical. Config + 2 tests (`EpsaChromLogdConfigTests`); aliases `epsa`, `chromlogd`.
+Dry staging (real webapp code): Nov-12 `already-uploaded` 377; v2 `ready` 377; 20 cpds `invalid-values` (S
+required-empty, 20) until S is un-required; Nov-25 original -> LogD 85979 `ready` 2 (superseded by the CHROMLOGD
+copy: detects 138435, live check `R2 required-empty` 2 until R2 is un-required); EPSA `invalid-values` (only the 2 NA
+rows; 397 already in CDD -> nothing to upload). **The big ChromLogD reports stage slowly: ~4.5 min, 2–3.5 GB RAM**
+(report tabs formatted to ~1M rows, ~85 MB XML each, plus one CDD batch lookup per row).
+
 ## Post-commit verification (check_cdd_commit.py, 2026-07-16)
 - **Purpose:** automate the manual "did it really upload?" check. For each committed workbook: detect protocol (+ species split) → fetch CDD protocol data → per compound, confirm a committed row EXISTS and numeric readout VALUES match. Webapp runs it automatically after commit (`POST /api/verify`) and flips rows + the Submit button to **azure "SUCCESS"** (`--azure #2f7bb5`); CLI returns SUCCESS/fail exit code.
 - **Match key (verified 2026-07-16):** file `Molecule-Batch ID` == CDD batch `molecule_batch_identifier`. Protocol-data rows carry `batch` as a **numeric id**, not the SRB string — map via `GET /vaults/{v}/batches?batches=id1,id2` → `molecule_batch_identifier`. (`molecule` and `run` are also numeric ids.)
@@ -1640,11 +1892,12 @@ spellings, and the split-group invariant).
 - **Duplicate-upload guard in the webapp (2026-08-11):** at staging (`/api/upload`, `/api/recheck`), before a unit is flagged `ready`, `_already_uploaded()` runs the SAME check against CDD — if every compound already exists with matching values, the unit's status becomes **`already-uploaded`** (orange tag `already uploaded`) instead of `ready`. Such units are excluded from submit (frontend sends only `ready`; the submit gate treats `already-uploaded` as resolved-but-not-submitted). Best-effort: needs a token, and any read/network error falls back to normal `ready` (never blocks staging). CDD lookups are memoized per request (pid→lookup) to avoid refetching for multi-unit files. Verified 2026-08-11: re-dragging the already-committed 20260811 LogD file → `already-uploaded`; a synthetic not-in-CDD batch → `ready`. NOTE: dup check now makes staging hit CDD (token needed at upload, not just submit). Frontend adds `--amber #c9791f` tag + gate text "N ready · M already uploaded (skipped)".
 
 ## Findings (CDD API behavior)
-- **Collection filter is a lie, filter client-side:** `/vaults/{v}/collections/{cid}/molecules` ignores `{cid}` and returns the full vault listing; `GET /vaults/{v}/molecules?collections={cid}` 404s under every param spelling. Real membership = the molecule's own `collections` field (`[{"id","name"}]`). So every export walks the whole vault once per requested collection, then filters in Python (`_in_collection`). _[get_library.py; memory cdd_api_collection_filter_quirk]_
+- **Collection filter is a lie, filter client-side:** `/vaults/{v}/collections/{cid}/molecules` ignored `{cid}` and returned the full vault listing, and **since 2026-11-16 it returns 404** — the code now walks the plain `/vaults/{v}/molecules` listing (see the 2026-11-16 section); `GET /vaults/{v}/molecules?collections={cid}` 404s under every param spelling. Real membership = the molecule's own `collections` field (`[{"id","name"}]`). So every export walks the whole vault once per requested collection, then filters in Python (`_in_collection`). _[get_library.py; memory cdd_api_collection_filter_quirk]_
 - **Saved searches can't be created via API:** `POST /vaults/{v}/searches` and `/molecules/search` both 404. Use a search created in the web UI (its numeric id is the URL prefix).
 - **Structure images are async:** `GET /molecules/{m}/image` returns a job; poll `GET /exports/{job}` until `Content-Type: image/png`. _[download_cdd_structures.py]_
 - **Slurps (bulk import) is async + template-driven:** `POST /vaults/{v}/slurps` (multipart: `file` part + `json` part `{project, mapping_template, runs, autoreject}`) → poll `GET /vaults/{v}/slurps/{id}` until `state` ∈ {committed, rejected, invalid, canceled} (`started` = in-flight). `committed` = success. Endpoint shapes confirmed from the Workflow-Informatics CDD-Python-SDK source (KB is login-gated). _[import_to_protocol.py]_
 - **`autoreject` defaults ON:** an import with Suspicious Events / Errors is rejected wholesale, not partly committed. Safer; override with `--no-autoreject`.
+- **An empty cell in a `required` readout is rejected (2026-11-16):** `Readout "" rejected. Readout definition "<name>" requires text data.` Empty cells in non-required readouts pass. The flag is `readout_definitions[].required` on `GET /protocols/{id}`. _[HMS `Provider Name` section]_
 - **Protocol data read path (2026-06-26):** `GET /vaults/{v}/protocols/{id}/data` → paginated rows `{id, molecule, batch, run, readouts:{<readout_id>:{value, outlier?}}}`; `GET /vaults/{v}/runs?protocols={id}` → `run_date` per run (for latest-per-compound); `GET /vaults/{v}/protocols/{id}` → readout_definitions (`id→name`). **Unlike the collection filter, `GET /vaults/{v}/molecules?molecules=id1,id2` IS honored** — returns exactly those molecules with `name`/`smiles`, so join SMILES by id (no full-vault walk needed).
 
 ## Decisions & conventions
@@ -1684,6 +1937,7 @@ spellings, and the split-group invariant).
 ## Reusable functions (reach for these first)
 - **Export:** `get_library.get_df(vault, collections, columns=…)` → DataFrame; `collections=[]` for all. `--list-fields` dumps every available column per namespace (top-level / molecule_fields / batch_fields) with coverage counts.
 - **Discover protocols:** `import_to_protocol.py --list-protocols` (find a PID) / `--describe-protocol PID` (readout ids+names). `--check-mapping` validates a file against config offline.
+- **Cells CDD would reject (2026-11-16):** `get_protocol_data.readout_definitions(session, vault, pid)` → `{rid: {name, type, required}}` live; `convert_upload.invalid_cells(header, rows, block, defs)` → `[{column, problem: required-empty | text-in-number, rows, required, examples}]`. The webapp runs both at staging (status `invalid-values`).
 - **Extract assay data:** `get_protocol_data.get_data(experiments=['logd','ppb',...])` → wide DataFrame (latest per compound, SMILES joined); CLI `--experiments`/`--list`.
 - **Pivot:** `convert_dataset.convert_to_target_format`, `validate_pivoted_output`, `read_xlsx_preserving_qualifiers`, `test_pivot_round_trip`.
 - **Species split:** `split_species.split_species(file, output_dir=None, dry_run=False)` → one `_<species>_upl.csv` per species; `--dry-run` reports without writing.

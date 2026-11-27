@@ -632,6 +632,7 @@ protocols:
     project: FBXO31
     mapping_template: "MPK_Cassette_GT"   # built 2026-11-10; binds 137872 (renamed IV 2026-11-12)
     route: "IV bolus"                     # Route value that routes a row here
+    dosing: cassette                      # mpk_to_upload.py: >1 compound per dosing group
     identifiers:
       batch_id: "Molecule-Batch ID"
     ignore:
@@ -677,6 +678,9 @@ protocols:
         group: "Study Group"
         dose: "Nominal dose (mg/kg)"
         formulation: "Formulation"
+      # '0.20 mg/mL in 5%DMSO/5% solutol in water, clear solution' -> Formulation = the vehicle only;
+      # Concentration keeps the Dose-tab value, and another value in this text is warned (2026-11-25)
+      formulation_pattern: '(?i)^(?:(?P<concentration>\d+(?:\.\d+)?)\s*mg/mL\s+in\s+)?(?P<formulation>.+)$'
       analyte_labels:                        # one column per analyte
         analyte: "Analyte compound"
         batch: "Batch No."
@@ -713,6 +717,7 @@ protocols:
     project: FBXO31
     mapping_template: "MPK_Cassette_PO_GT"   # built 2026-11-12 from a _PO_upl.csv
     route: "PO"
+    dosing: cassette
     identifiers:
       batch_id: "Molecule-Batch ID"
     ignore:
@@ -742,6 +747,89 @@ protocols:
       "Bioavailability (%)": 2031826
       "Analyte": 2031838
       "Comment": 2031828
+    report: *mpk_report
+
+  # --- Mouse PK single compound, split by Route (created 2026-11-26 as copies of the cassette pair) ---
+  # Same WuXi report layout with ONE compound per dosing group (`dosing: single`).
+  # No `Analyte` column: the analyte is the dosed compound. That missing column is what
+  # tells detection a single file from a cassette file; the Route values are the same.
+  #   ..._IV_bolus_upl.csv -> 138986
+  #   ..._PO_upl.csv       -> 138987
+
+  138986:
+    name: Mouse PK Single IV
+    alias: mpk_single_iv
+    label: MPK Single IV
+    project: FBXO31
+    mapping_template: "MPK_Single_IV_GT"  # built 2026-11-26 (id 62934); first import 2026102901 IV
+    route: "IV bolus"
+    dosing: single
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2135406
+      "Date": 2135407
+      "Species": 2135408
+      "Strain": 2135420
+      "Gender": 2135421
+      "Route": 2135409
+      "Formulation": 2135418
+      "Concentration (mg/mL)": 2135422
+      "Dose (mg/kg)": 2135423
+      "Dosing Volume (mL)": 2135424
+      "C0 (ng/mL)": 2135410
+      "Cmax (ng/mL)": 2135413
+      "Clearance (mL/min/kg)": 2135411
+      "Vdss (L/kg)": 2135412
+      "Tmax (hr)": 2135414
+      "Tlast (hr)": 2135425
+      "T1/2 (hr)": 2135415
+      "MRTlast (hr)": 2135426
+      "AUC(last) (ng.h/mL)": 2135416
+      "AUCinf (ng.h/mL)": 2135427
+      "AUC (%)": 2135428
+      "Bioavailability (%)": 2135417
+      "Comment": 2135419
+    report: *mpk_report
+
+  138987:
+    name: Mouse PK Single PO
+    alias: mpk_single_po
+    label: MPK Single PO
+    project: FBXO31
+    mapping_template: "MPK_Single_PO_GT"  # built 2026-11-26 (id 62935); first import 2026102902 PO
+    route: "PO"
+    dosing: single
+    identifiers:
+      batch_id: "Molecule-Batch ID"
+    ignore:
+      - "Run Lab"
+    readouts:
+      "Study number": 2135430
+      "Date": 2135431
+      "Species": 2135432
+      "Strain": 2135444
+      "Gender": 2135445
+      "Route": 2135433
+      "Formulation": 2135442
+      "Concentration (mg/mL)": 2135446
+      "Dose (mg/kg)": 2135447
+      "Dosing Volume (mL)": 2135448
+      "C0 (ng/mL)": 2135434
+      "Cmax (ng/mL)": 2135437
+      "Clearance (mL/min/kg)": 2135435
+      "Vdss (L/kg)": 2135436
+      "Tmax (hr)": 2135438
+      "Tlast (hr)": 2135449
+      "T1/2 (hr)": 2135439
+      "MRTlast (hr)": 2135450
+      "AUC(last) (ng.h/mL)": 2135440
+      "AUCinf (ng.h/mL)": 2135451
+      "AUC (%)": 2135452
+      "Bioavailability (%)": 2135441
+      "Comment": 2135443
     report: *mpk_report
 
   # --- Caco-2 permeability (single protocol, no species split) ---
@@ -775,3 +863,40 @@ protocols:
       "Permeability Class": 1073991
       "Efflux Transporter Substrate": 1073992
       "Provider Name": 1073993
+
+  # --- EPSA + ChromLogD (protocols and templates built by the operator, 2026-11-13) ---
+  # WuXi ships no Upload tab for these reports. The operator builds it from the report
+  # ('Summary Report' for EPSA, 'Results ' for ChromLogD) and leaves out the reference
+  # compounds (their Batch is 'NA'). The identifier is `Batch`: it holds the full
+  # SRB-XXXXXXX-NNN batch id, and EPSA_GT / CHROMLOGD_GT map it to Molecule-Batch ID.
+  # `Compound ID` is ignored globally (ignore_columns). `Date` (a Text readout) is the
+  # Study Completion Date on the Signature tab, as YYYYMMDD. Every readout is required
+  # in CDD, so a blank or 'NA' cell rejects the row. Keep the column order of the
+  # operator's tabs: Batch, Date, Chromatographic LogDpH 7.4, R2, S.
+
+  138427:
+    name: EPSA
+    alias: epsa
+    label: EPSA
+    project: FBXO31
+    mapping_template: "EPSA_GT"         # built 2026-11-13 by the operator (template id 62582)
+    identifiers:
+      batch_id: "Batch"
+    readouts:
+      "Date": 2033350
+      "Retention Time (min)": 2033348
+      "EPSA Result (Å2)": 2033349     # Å is U+00C5, as in the report header
+
+  138435:
+    name: CHROMLOGD
+    alias: chromlogd
+    label: ChromLogD
+    project: FBXO31
+    mapping_template: "CHROMLOGD_GT"    # built 2026-11-13 by the operator (template id 62589)
+    identifiers:
+      batch_id: "Batch"
+    readouts:
+      "Date": 2033449
+      "Chromatographic LogDpH 7.4": 2033450
+      "R2": 2033451
+      "S": 2033453

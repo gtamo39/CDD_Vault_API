@@ -255,6 +255,43 @@ def _is_na(v):
     return v is None or str(v).strip().lower() in ("", "na", "n/a", "nan", "none", "nd", "n.d.")
 
 
+# a value a CDD Number readout stores: a number, optionally qualified (< > <= >= ≤ ≥)
+_CDD_NUMBER = re.compile(r"^\s*(?:[<>]=?|[≤≥])?\s*[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?\s*$")
+
+
+def _is_number(v):
+    """True for a cell a CDD Number readout accepts: a number, or a qualified one ('< 0.5')."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)) or bool(_CDD_NUMBER.match(str(v)))
+
+
+def invalid_cells(header, rows, block, definitions):
+    """Cells CDD would reject, per mapped readout column.
+
+    Two problems make CDD reject a row (and, with autoreject, the whole import):
+    an empty cell in a `required` readout, and text such as 'NA' in a `Number`
+    readout. `definitions` is {readout_id: {"name", "type", "required"}} from the
+    live protocol; a readout it lacks, or a column the file lacks, is skipped.
+    Returns [{"column", "problem": "required-empty" | "text-in-number", "rows",
+    "required", "examples"}], in config order; [] when every cell passes.
+    """
+    hdr = {_norm(h): i for i, h in enumerate(header)}
+    out = []
+    for col, rid in (block.get("readouts") or {}).items():
+        i, d = hdr.get(_norm(col)), definitions.get(rid)
+        if i is None or d is None:
+            continue
+        vals = [r[i] if i < len(r) else "" for r in rows]
+        empty = sum(_blank(v) for v in vals)
+        if d["required"] and empty:
+            out.append({"column": col, "problem": "required-empty", "rows": empty,
+                        "required": True, "examples": []})
+        text = [str(v).strip() for v in vals if not _blank(v) and not _is_number(v)]
+        if d["type"] == "Number" and text:
+            out.append({"column": col, "problem": "text-in-number", "rows": len(text),
+                        "required": d["required"], "examples": sorted(set(text))[:3]})
+    return out
+
+
 def _round_to(v, decimals):
     """Round a number, or a '<'/'>'-qualified number, keeping the qualifier. Text passes through."""
     if _is_na(v):

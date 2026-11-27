@@ -11,7 +11,8 @@ edit, not a code change.
 Each value comes from:
   * study header (col B label, col C value): study number, in-life date, species
   * per-group header rows: route (group name minus its number), nominal dose,
-    formulation (forward-filled across a merged group)
+    formulation (forward-filled across a merged group; `formulation_pattern` cuts a
+    leading '<conc> mg/mL in', so the readout holds the vehicle only)
   * per-analyte rows: analyte molecule id -> batch id (the identifier)
   * each 'PK Parameters' table: the 'Mean' column, matched by row LABEL
   * the 'Dose' tab: nominal concentration per (group number, compound)
@@ -71,6 +72,21 @@ def group_table(ws, rows, labels):
     return table
 
 
+def report_kind(path, spec):
+    """'cassette' if a dosing group of the report gives more than one compound, else 'single'.
+
+    The CLI fills only the blocks whose `dosing:` equals this, so a single-compound report never
+    gets the cassette column layout (and the reverse).
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb[spec["sheet"]]
+    groups = group_table(ws, header_rows(ws, spec["block_title"]), spec["group_labels"])
+    wb.close()
+    return "cassette" if max(Counter(g for g, _ in groups).values()) > 1 else "single"
+
+
 def analyte_batches(ws, rows, labels):
     """{analyte molecule id: batch id}, reading columns right from col C until the batch cell is blank."""
     out = {}
@@ -124,12 +140,14 @@ def dose_concentrations(ws, labels):
 
 
 def report_rows(path, block):
-    """Read one MPK report into (header, rows, blanked) for a protocol block with a `report:` map.
+    """Read one MPK report into (header, rows, blanked, conflicts) for a block with a `report:` map.
 
-    header  : identifier + the block's readout keys, in config order
-    rows    : one list per (analyte, group), aligned to header; only the groups
-              whose route equals the block's `route:` when it sets one
-    blanked : {field: Counter(token)} for numeric cells written blank
+    header    : identifier + the block's readout keys, in config order
+    rows      : one list per (analyte, group), aligned to header; only the groups
+                whose route equals the block's `route:` when it sets one
+    blanked   : {field: Counter(token)} for numeric cells written blank
+    conflicts : 1-based positions in `rows` whose formulation text names another
+                concentration than the Dose tab (Concentration keeps the Dose-tab value)
     Raises ValueError if the species text does not match `species_pattern`.
     """
     import openpyxl
@@ -153,7 +171,8 @@ def report_rows(path, block):
     conc = dose_concentrations(wb[spec["dose_sheet"]], spec["dose_tab"])
     wb.close()
 
-    out, blanked = [], defaultdict(Counter)
+    fpat = spec.get("formulation_pattern")
+    out, blanked, conflicts = [], defaultdict(Counter), []
     for analyte, group, vals in tables:
         route = re.sub(r"\d+$", "", group).strip()
         if block.get("route") and route != block["route"]:
@@ -171,8 +190,14 @@ def report_rows(path, block):
             if s and not NUMERIC.match(s):
                 blanked[f][s] += 1
                 rec[f] = ""
+        fm = fpat and re.match(fpat, rec[fields["formulation"]])
+        if fm:
+            rec[fields["formulation"]] = fm["formulation"]
+            c = _norm(rec[fields["concentration"]])
+            if fm["concentration"] and (not c or float(c) != float(fm["concentration"])):
+                conflicts.append(len(out) + 1)
         out.append([rec.get(h, "") for h in header])
-    return header, out, blanked
+    return header, out, blanked, conflicts
 
 
 def sheet_xml(header, rows):
@@ -242,7 +267,10 @@ def add_upload_sheet(src, dst, header, rows, name="Upload"):
 
 
 def main():
-    """Convert MPK reports to one `<report>_<route>_upl.csv` per route block (stdout is metadata only)."""
+    """Convert MPK reports to one `<report>_<route>_upl.csv` per route block (stdout is metadata only).
+
+    Without --protocol, each report fills the blocks whose `dosing:` matches its `report_kind`.
+    """
     import argparse
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -252,18 +280,24 @@ def main():
     ap = argparse.ArgumentParser(description="Build CDD upload CSVs from WuXi MPK reports.")
     ap.add_argument("files", nargs="+", help="MPK report .xlsx files (no Upload tab needed).")
     ap.add_argument("--config", default="config/config.yaml")
-    ap.add_argument("--protocol", type=int, help="One block only; default every block with a `report:` map.")
+    ap.add_argument("--protocol", type=int,
+                    help="One block only; default: the blocks whose `dosing:` matches the report (cassette / single).")
     ap.add_argument("--dry-run", action="store_true", help="Report what would be written, write nothing.")
     ap.add_argument("--upload-tab", metavar="DIR",
                     help="Also write a copy of each report into DIR with an 'Upload' tab holding every route.")
     args = ap.parse_args()
 
     protos = itp.load_config(args.config)["protocols"]
-    blocks = [protos[args.protocol]] if args.protocol else [b for b in protos.values() if b.get("report")]
+    report_blocks = [b for b in protos.values() if b.get("report")]
     for f in args.files:
+        kind = report_kind(f, report_blocks[0]["report"])
+        blocks = [protos[args.protocol]] if args.protocol else [b for b in report_blocks if b.get("dosing") == kind]
+        if not blocks:
+            sys.exit(f"ERR {Path(f).name}: {kind} report, but no block has `dosing: {kind}`")
+        print(f"{Path(f).name}: {kind} report")
         written = 0
         for block in blocks:
-            header, rows, blanked = report_rows(f, block)
+            header, rows, blanked, conflicts = report_rows(f, block)
             tag = f"_{_safe(block['route'])}" if block.get("route") else ""
             out = Path(f).with_name(f"{Path(f).stem}{tag}_upl.csv")
             if not args.dry_run:
@@ -272,9 +306,12 @@ def main():
             blank = {k: dict(v) for k, v in blanked.items()}
             print(f"{Path(f).name} [{block.get('route') or 'all'}]: rows={len(rows)} cols={len(header)} "
                   f"blanked={blank or 'none'}{'' if args.dry_run else ' -> ' + out.name}")
+            if conflicts:
+                print(f"WARN {Path(f).name} [{block.get('route') or 'all'}]: row(s) {conflicts}: the formulation "
+                      "names another concentration than the Dose tab; Concentration keeps the Dose-tab value")
 
         # rows whose route no block claims
-        header, every, _ = report_rows(f, {k: v for k, v in blocks[0].items() if k != "route"})
+        header, every, _, _ = report_rows(f, {k: v for k, v in blocks[0].items() if k != "route"})
         if not args.protocol and len(every) != written:
             print(f"WARN {Path(f).name}: {len(every) - written} row(s) match no block's route — not written")
 

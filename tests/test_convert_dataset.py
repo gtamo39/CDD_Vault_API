@@ -32,7 +32,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'python'))
 
-from convert_upload import (apply_corrections, apply_global_ignores,
+from convert_upload import (apply_corrections, apply_global_ignores, invalid_cells,
                             normalize_species, species_alias_map, split_species)
 from import_to_protocol import evaluate_mapping
 from detect_protocol import _group_name
@@ -1144,8 +1144,10 @@ class GroupNameTests(unittest.TestCase):
         self.assertEqual(_group_name(tied), "Species split")
 
 
-def _mpk_workbook(path, species="Male BALB/c Mouse, Fed"):
-    """Write a 2-analyte cassette MPK report with the real report layout and fake TEST- ids."""
+def _mpk_workbook(path, species="Male BALB/c Mouse, Fed",
+                  forms=("0.2 mg/mL in vehicle", None, "1 mg/mL in vehicle", None), concs=(0.2, 0.2, 1, 1)):
+    """Write a 2-analyte cassette MPK report with the real report layout and fake TEST- ids.
+    `forms` are the 4 group formulation cells (None = merged); `concs` the 4 Dose-tab concentrations."""
     import openpyxl
     from datetime import datetime
     wb = openpyxl.Workbook()
@@ -1155,7 +1157,7 @@ def _mpk_workbook(path, species="Male BALB/c Mouse, Fed"):
             10: ("Administered compound", ["TEST-0000001", "TEST-0000002", "TEST-0000001", "TEST-0000002", "PK Calculation Settings"]),
             11: ("Study Group", ["IV bolus1", "IV bolus1", "PO2", "PO2", "Program"]),
             12: ("Nominal dose (mg/kg)", [1, 1, 5, 5, "Model"]),
-            14: ("Formulation", ["0.2 mg/mL in vehicle", None, "1 mg/mL in vehicle", None]),
+            14: ("Formulation", list(forms)),
             15: ("In-life start date", [datetime(2026, 10, 1)]),
             19: ("Analyte compound", ["TEST-0000001", "TEST-0000002", None, None, "Calculated by"]),
             20: ("Batch No.", ["TEST-0000001-001", "TEST-0000002-001"])}
@@ -1175,7 +1177,7 @@ def _mpk_workbook(path, species="Male BALB/c Mouse, Fed"):
             ws.cell(top + 4 + i, 10, b); ws.cell(top + 4 + i, 14, po[i])
     d = wb.create_sheet("Dose")
     d.append(["Group No.", "Dose Route", "Test Article", "Nominal Conc. (mg/mL)"])
-    for g, cpd, conc in ((1, "TEST-0000001", 0.2), (1, "TEST-0000002", 0.2), (2, "TEST-0000001", 1), (2, "TEST-0000002", 1)):
+    for (g, cpd), conc in zip(((1, "TEST-0000001"), (1, "TEST-0000002"), (2, "TEST-0000001"), (2, "TEST-0000002")), concs):
         d.append([g, "[Pre]IV bolus" if g == 1 else "[Pre]PO", cpd, conc])
     wb.save(path)
 
@@ -1192,7 +1194,7 @@ class MpkToUploadTests(unittest.TestCase):
         cls.dir = tempfile.TemporaryDirectory()
         cls.path = Path(cls.dir.name) / "mpk.xlsx"
         _mpk_workbook(cls.path)
-        cls.header, rows, cls.blanked = mpk.report_rows(cls.path, cls.block)
+        cls.header, rows, cls.blanked, cls.conflicts = mpk.report_rows(cls.path, cls.block)
         cls.rows = [dict(zip(cls.header, r)) for r in rows]
         cls.by = {(r["Molecule-Batch ID"], r["Route"]): r for r in cls.rows}
 
@@ -1231,6 +1233,26 @@ class MpkToUploadTests(unittest.TestCase):
         # no blank count is charged to a field for an unmapped row
         self.assertNotIn("--", {tok for c in self.blanked.values() for tok in c})
 
+    def test_report_kind_tells_cassette_from_single(self):
+        """More than one compound in a dosing group -> 'cassette'; one per group -> 'single'.
+        The CLI fills only the blocks whose `dosing:` equals it (2026-11-26)."""
+        import openpyxl
+        single = Path(self.dir.name) / "single.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "PK Report"
+        head = {"Administered compound": ["TEST-0000001", "TEST-0000001"], "Study Group": ["IV bolus1", "PO2"],
+                "Nominal dose (mg/kg)": [1, 5], "Formulation": ["0.2 mg/mL in vehicle", "1 mg/mL in vehicle"]}
+        for r, (label, vals) in enumerate(head.items(), 10):
+            ws.cell(r, 2, label)
+            for i, v in enumerate(vals):
+                ws.cell(r, 3 + i, v)
+        ws.cell(20, 2, "Pharmacokinetics of TEST-0000001")
+        wb.save(single)
+        spec = self.block["report"]
+        # the 2-compound synthetic report is a cassette, the 1-compound one is single
+        self.assertEqual((mpk.report_kind(self.path, spec), mpk.report_kind(single, spec)), ("cassette", "single"))
+
     def test_species_text_is_split(self):
         """'Male BALB/c Mouse, Fed' -> Gender / Strain / Species, with the fed state in Comment."""
         r = self.rows[0]
@@ -1240,8 +1262,8 @@ class MpkToUploadTests(unittest.TestCase):
     def test_group_level_fields(self):
         """Nominal dose per column, formulation forward-filled over a merged group, ISO date, Dose-tab conc."""
         r = self.by[("TEST-0000002-001", "IV bolus")]
-        # the second IV column had a blank (merged) formulation cell
-        self.assertEqual(r["Formulation"], "0.2 mg/mL in vehicle")
+        # the second IV column had a blank (merged) formulation cell; the '0.2 mg/mL in' prefix is cut
+        self.assertEqual(r["Formulation"], "vehicle")
         # nominal dose, date and concentration come from their own sources
         self.assertEqual((r["Dose (mg/kg)"], r["Date"], r["Concentration (mg/mL)"]), (1, "2026-10-01", 0.2))
         self.assertEqual(self.by[("TEST-0000002-001", "PO")]["Concentration (mg/mL)"], 1)
@@ -1249,7 +1271,7 @@ class MpkToUploadTests(unittest.TestCase):
     def test_route_block_keeps_only_its_route(self):
         """The IV block (route 'IV bolus') and the PO block (route 'PO') each take only their own rows."""
         for pid, route in ((137872, "IV bolus"), (138367, "PO")):
-            _, rows, _ = mpk.report_rows(self.path, self.protos[pid])
+            _, rows, _, _ = mpk.report_rows(self.path, self.protos[pid])
             ri = self.header.index("Route")
             # 2 analytes, one row each, all on this block's route
             self.assertEqual([r[ri] for r in rows], [route, route])
@@ -1265,6 +1287,38 @@ class MpkToUploadTests(unittest.TestCase):
         """The PO block reuses the IV block's `report:` map through a YAML anchor, not a copy."""
         # one object, so a label fix applies to both routes
         self.assertIs(self.protos[137872]["report"], self.protos[138367]["report"])
+
+    def test_formulation_holds_the_vehicle_only(self):
+        """Every row's Formulation is the vehicle (the '<conc> mg/mL in' prefix is cut, operator
+        request 2026-11-25); the concentration stays in its own column, and the two agree here."""
+        # IV and PO texts both lose their (different) concentration prefix
+        self.assertEqual({r["Formulation"] for r in self.rows}, {"vehicle"})
+        # Concentration keeps the Dose-tab value per route
+        self.assertEqual({(r["Route"], r["Concentration (mg/mL)"]) for r in self.rows}, {("IV bolus", 0.2), ("PO", 1)})
+        # text and Dose tab agree, so no row is reported
+        self.assertEqual(self.conflicts, [])
+
+    def test_formulation_concentration_conflict_is_reported(self):
+        """A Dose-tab concentration that differs from the one named in the formulation text is
+        reported by row position; Concentration keeps the Dose-tab value (no silent switch)."""
+        path = Path(self.dir.name) / "conflict.xlsx"
+        _mpk_workbook(path, concs=(0.2, 0.5, 1, 1))
+        header, rows, _, conflicts = mpk.report_rows(path, self.protos[137872])
+        # the second IV row (TEST-0000002) is the one whose Dose tab says 0.5, not 0.2
+        self.assertEqual(conflicts, [2])
+        # its Concentration is still the Dose-tab value
+        self.assertEqual(rows[1][header.index("Concentration (mg/mL)")], 0.5)
+
+    def test_formulation_without_a_concentration_is_kept_whole(self):
+        """A formulation text with no '<conc> mg/mL in' prefix is kept as written, with no conflict."""
+        path = Path(self.dir.name) / "plain.xlsx"
+        _mpk_workbook(path, forms=("5%DMSO in water, clear solution", None, "vehicle B", None))
+        header, rows, _, conflicts = mpk.report_rows(path, self.block)
+        # the text passes through unchanged, merged cells still forward-filled
+        self.assertEqual([r[header.index("Formulation")] for r in rows],
+                         ["5%DMSO in water, clear solution", "vehicle B"] * 2)
+        # nothing to compare against, so nothing is reported
+        self.assertEqual(conflicts, [])
 
     def test_unparseable_species_raises(self):
         """Species text that does not fit species_pattern stops the run instead of guessing."""
@@ -1318,6 +1372,18 @@ class RouteSplitTests(unittest.TestCase):
         d = detect([b["identifiers"]["batch_id"]] + list(b["readouts"]), cfg)
         # both routes resolve to their own protocol
         self.assertEqual(d["route_pids"], {"IV bolus": 137872, "PO": 138367})
+
+    def test_real_mpk_single_blocks_take_a_header_without_analyte(self):
+        """A single-compound Upload header (no Analyte) routes to 138986 / 138987, not to the cassette
+        pair. Both pairs split on the same Route values, so the missing Analyte column is the only
+        thing that tells them apart (2026-11-26)."""
+        import import_to_protocol as itp
+        from detect_protocol import detect
+        cfg = itp.load_config(str(ROOT / "config" / "config.yaml"))
+        b = cfg["protocols"][138986]
+        d = detect([b["identifiers"]["batch_id"]] + list(b["readouts"]), cfg)
+        # each route resolves to the single-compound protocol of that route
+        self.assertEqual(d["route_pids"], {"IV bolus": 138986, "PO": 138987})
 
 
 class AddUploadSheetTests(unittest.TestCase):
@@ -1439,6 +1505,153 @@ class CellLineSplitTests(unittest.TestCase):
                 # every block in the group carries the same identifier columns
                 self.assertEqual(len({str(sorted(b["identifiers"].values())) for b in blocks}), 1,
                                  f"{key}: {[b['name'] for b in blocks]}")
+
+    def test_split_values_are_unique_within_a_column_set(self):
+        """In the real config, two blocks with the same column set never carry the same split value.
+
+        A protocol duplicated in CDD with unchanged columns shares both, and detection then sends
+        every file of that layout to whichever block it reads last (MPK single vs cassette, 2026-11-26).
+        """
+        import import_to_protocol as itp
+        from convert_upload import split_key
+        from detect_protocol import SPLIT_KEYS
+        protos = itp.load_config(str(ROOT / "config" / "config.yaml"))["protocols"]
+        for key in SPLIT_KEYS:
+            groups = {}
+            for b in protos.values():
+                if b.get(key) and b.get("readouts"):
+                    groups.setdefault(frozenset(b["readouts"]), []).append(b)
+            for blocks in groups.values():
+                values = [split_key(b[key]) for b in blocks]
+                # no split value appears twice among blocks that share their columns
+                self.assertEqual(len(values), len(set(values)), f"{key}: {[b['name'] for b in blocks]}")
+
+
+class InvalidCellsTests(unittest.TestCase):
+    """convert_upload.invalid_cells — the cells CDD rejects (an empty `required` readout, text
+    in a `Number` readout), so the webapp blocks Submit before the import. With autoreject, one
+    such row rejects the whole import (HMS, 2026-11-16). Synthetic ids and values only."""
+
+    BLOCK = {'readouts': {'T½ (min)': 1, 'Provider Name': 2, 'Provider Comment': 3, 'Score': 4}}
+    DEFS = {1: {'name': 'T½', 'type': 'Number', 'required': True},
+            2: {'name': 'Provider Name', 'type': 'Text', 'required': True},
+            3: {'name': 'Provider Comment', 'type': 'Text', 'required': False},
+            4: {'name': 'Score', 'type': 'Number', 'required': False}}
+    HEADER = ['Molecule-Batch ID', 'T½ (min)', 'Provider Name', 'Provider Comment', 'Score']
+
+    def _rows(self, *vals):
+        return [['TEST-0000001-001', *v] for v in vals]
+
+    def _summary(self, out):
+        return [(p['column'], p['problem'], p['rows'], p['required']) for p in out]
+
+    def test_clean_rows_pass(self):
+        """Numbers (cell types and text), qualifiers and filled required text give no problem."""
+        rows = self._rows([12.5, 'Lab A', '', 3], ['> 240', 'Lab A', '', '<=0.5'],
+                          [7, 'Lab A', 'note', '≥ 1e-3'], ['-0.5', 'Lab A', '', '.5'])
+        # nothing CDD would reject
+        self.assertEqual(invalid_cells(self.HEADER, rows, self.BLOCK, self.DEFS), [])
+
+    def test_empty_required_text_is_flagged(self):
+        """A blank required Provider Name is counted; a spaces-only cell counts as blank."""
+        rows = self._rows([1, '', '', 1], [1, '   ', '', 1], [1, 'Lab A', '', 1])
+        out = invalid_cells(self.HEADER, rows, self.BLOCK, self.DEFS)
+        # one problem: 2 of 3 rows have no Provider Name
+        self.assertEqual(self._summary(out), [('Provider Name', 'required-empty', 2, True)])
+
+    def test_na_in_a_required_number_is_text_not_blank(self):
+        """'NA' in a required Number readout is text (CDD: 'is invalid (NA)'), and the problem
+        carries required=True so the UI can say that an empty cell is rejected too."""
+        out = invalid_cells(self.HEADER, self._rows(['NA', 'Lab A', '', 1]), self.BLOCK, self.DEFS)
+        # exactly one text-in-number problem on T½, flagged as required
+        self.assertEqual(self._summary(out), [('T½ (min)', 'text-in-number', 1, True)])
+        # the offending text is reported so the user can find it
+        self.assertEqual(out[0]['examples'], ['NA'])
+
+    def test_optional_columns(self):
+        """An empty optional readout passes; text in an optional Number readout still fails."""
+        out = invalid_cells(self.HEADER, self._rows([1, 'Lab A', '', 'ND']), self.BLOCK, self.DEFS)
+        # only the text in the optional Score is flagged
+        self.assertEqual(self._summary(out), [('Score', 'text-in-number', 1, False)])
+
+    def test_unknown_readout_and_absent_column_are_skipped(self):
+        """A readout id the live protocol lacks, or a column the file lacks, is skipped."""
+        block = {'readouts': {'T½ (min)': 99, 'Not In File': 2}}
+        # neither the unknown id nor the absent column raises or flags
+        self.assertEqual(invalid_cells(self.HEADER, self._rows(['NA', '', '', 1]), block, self.DEFS), [])
+
+    def test_real_hms_block_finds_both_cdd_errors(self):
+        """The REAL human hepatocyte block (138104): a blank Provider Name and an 'NA' T½ are
+        both found through the config's column -> readout-id map. Flags mirror CDD 2026-11-16."""
+        import import_to_protocol as itp
+        block = itp.load_config(str(ROOT / "config" / "config.yaml"))["protocols"][138104]
+        numeric = {"T½ (min)", "Clint_hep (uL/min/10^6)", "Clint_liver (mL/min/kg)"}
+        optional = {"Provider Comment", "Comment"}
+        defs = {rid: {"name": col, "type": "Number" if col in numeric else "Text",
+                      "required": col not in optional} for col, rid in block["readouts"].items()}
+        header = ["Molecule-Batch ID", *block["readouts"]]
+        row = {"Molecule-Batch ID": "TEST-0000001-001", "Species": "Human", "Provider Name": "",
+               "T½ (min)": "NA", "Clint_hep (uL/min/10^6)": 1.5, "Clint_liver (mL/min/kg)": "> 3",
+               "Provider Comment": "", "Comment": ""}
+        out = invalid_cells(header, [[row.get(h, "x") for h in header]], block, defs)
+        # the two errors CDD raised on 2026-11-16, in config order; empty comments pass
+        self.assertEqual([(p['column'], p['problem']) for p in out],
+                         [('T½ (min)', 'text-in-number'), ('Provider Name', 'required-empty')])
+
+
+class ReadoutDefinitionsTests(unittest.TestCase):
+    """get_protocol_data.readout_definitions — the live readout flags the webapp checks
+    cells against. Offline: a fake session returns a protocol payload."""
+
+    def test_parses_type_and_required(self):
+        """data_type as a string or as {'name': ...}; a missing `required` means False; a
+        readout without an id is skipped."""
+        import get_protocol_data as gpd
+
+        payload = {"readout_definitions": [
+            {"id": 1, "name": "T½", "data_type": "Number", "required": True},
+            {"id": 2, "name": "Provider Name", "data_type": {"name": "Text"}},
+            {"name": "no id", "data_type": "Text", "required": True}]}
+
+        class Resp:
+            status_code, content = 200, b""
+            def json(self):
+                return payload
+
+        class Session:
+            def get(self, url, params=None, timeout=None):
+                return Resp()
+
+        out = gpd.readout_definitions(Session(), 7108, 1)
+        # both readouts with an id, each with name, type and a boolean required flag
+        self.assertEqual(out, {1: {"name": "T½", "required": True, "type": "Number"},
+                               2: {"name": "Provider Name", "required": False, "type": "Text"}})
+
+
+class EpsaChromLogdConfigTests(unittest.TestCase):
+    """EPSA (138427) and CHROMLOGD (138435): the operator's Upload headers from the 2026-11-12
+    reports, keyed by `Batch` instead of `Molecule-Batch ID`."""
+
+    EPSA = ["Date", "Compound ID", "Batch", "Retention Time (min)", "EPSA Result (Å2)"]
+    CHROMLOGD = ["Batch", "Date", "Chromatographic LogDpH 7.4", "R2", "S"]
+
+    def test_real_headers_detect_their_protocol(self):
+        """Each operator header gives one protocol; the shared 'Date' column pulls in no other block."""
+        import import_to_protocol as itp
+        from detect_protocol import detect
+        cfg = itp.load_config(str(ROOT / "config" / "config.yaml"))
+        for header, pid in ((self.EPSA, 138427), (self.CHROMLOGD, 138435)):
+            d = detect(header, cfg)
+            # a single winner, the right protocol
+            self.assertEqual((d["status"], d["pid"]), ("single", pid))
+
+    def test_epsa_header_leaves_no_unmapped_column(self):
+        """'Compound ID' is ignored through the global `ignore_columns`, so nothing blocks the import."""
+        import import_to_protocol as itp
+        block = itp.load_config(str(ROOT / "config" / "config.yaml"))["protocols"][138427]
+        mapped, ignored, unmapped, missing = itp.validate_header(self.EPSA, block)
+        # every column is mapped or ignored, and every readout is present
+        self.assertEqual((ignored, unmapped, missing), (["Compound ID"], [], []))
 
 
 if __name__ == '__main__':

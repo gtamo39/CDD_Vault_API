@@ -600,9 +600,11 @@ format regardless of extension, add `--format sdf` or `--format csv`.)
 
 ## Known CDD API quirks
 
-- The endpoint `/vaults/{v}/collections/{cid}/molecules` returns the full vault
-  listing **regardless of `{cid}`** — the path segment is ignored. The script
-  filters client-side via each molecule's `collections` field.
+- CDD has no server-side collection filter. The endpoint
+  `/vaults/{v}/collections/{cid}/molecules` ignored `{cid}` and returned the full
+  vault listing; since 2026-11-16 it returns **404**. The script reads the plain
+  `/vaults/{v}/molecules` listing (the same rows) and filters client-side via
+  each molecule's `collections` field.
 - `GET /vaults/{v}/molecules?collections={cid}` returns **404** under every
   parameter spelling tried (`collection`, `collections`, `collection_id`,
   `collection_ids`).
